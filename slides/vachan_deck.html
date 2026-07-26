@@ -97,13 +97,13 @@
   .u-line b{color:var(--bone)}
 
   /* S3 layers */
-  .layers{flex:1;display:grid;grid-template-columns:1.15fr .85fr;gap:1.6cqw;
-    margin-top:1.8cqw;min-height:0}
-  .layerlist{display:flex;flex-direction:column;gap:1.1cqw}
-  .layer{border-left:.35cqw solid var(--green);padding:1.15cqw 1.5cqw}
-  .layer .n{font-family:var(--mono);font-size:1cqw;color:var(--green);letter-spacing:.2em}
-  .layer .t{font-size:1.55cqw;font-weight:600;margin-top:.25cqw}
-  .layer .d{font-size:1.2cqw;color:var(--steel);margin-top:.3cqw;line-height:1.4}
+  .layers{flex:1;display:grid;grid-template-columns:1.15fr .85fr;gap:1.5cqw;
+    margin-top:1.4cqw;min-height:0}
+  .layerlist{display:flex;flex-direction:column;gap:.8cqw;min-height:0}
+  .layer{border-left:.35cqw solid var(--green);padding:.85cqw 1.4cqw;flex:1;min-height:0}
+  .layer .n{font-family:var(--mono);font-size:.92cqw;color:var(--green);letter-spacing:.2em}
+  .layer .t{font-size:1.38cqw;font-weight:600;margin-top:.2cqw}
+  .layer .d{font-size:1.1cqw;color:var(--steel);margin-top:.25cqw;line-height:1.35}
   .machines{padding:1.5cqw 1.7cqw;display:flex;flex-direction:column;gap:1.2cqw}
   .machines h3{font-family:var(--mono);font-size:1.05cqw;letter-spacing:.24em;
     color:var(--steel);text-transform:uppercase}
@@ -270,7 +270,7 @@
         <div><h3>Identity — in code</h3>
           <div class="sm">UNVERIFIED → VERIFYING → <b class="g">CONFIRMED</b><br>
           any turn → <b class="r">THIRD_PARTY</b> · handover → relock<br>
-          never restored across calls</div></div>
+          re-verify allowed · never restored across calls</div></div>
         <div><h3>Promise — event-sourced</h3>
           <div class="sm">CANDIDATE → READ_BACK → <b class="a">COMMITTED</b><br>
           dual-format echo · explicit yes · idempotent</div></div>
@@ -306,8 +306,8 @@
           <b>committed once</b>.</p></div>
       <div class="step panel rust"><span class="no">05</span>
         <span class="name">HANDOVER</span>
-        <p class="desc">"Lo, baat karo" — <b>demoted the same turn</b>. Sunita gets a
-          content-free callback.</p></div>
+        <p class="desc">"Lo, baat karo" — <b>demoted the same turn</b>. Sunita's balance
+          question gets a content-free refusal.</p></div>
       <div class="step panel plain"><span class="no">06</span>
         <span class="name">EVIDENCE</span>
         <p class="desc">One of five dispositions + an ordered timeline of every decision.</p></div>
@@ -325,7 +325,7 @@
     <div class="demo rise">
       <div class="beat"><span class="t">0:00</span>
         <span class="what">Priya: preflight READY → <b>Start</b> — her 1st of 3 actions</span>
-        <span class="proof">QUEUE_GUARDED</span></div>
+        <span class="proof">PREFLIGHT_READY</span></div>
       <div class="beat"><span class="t">0:10</span>
         <span class="what">"Scam hai kya?" → anti-scam pledge, zero debt words</span>
         <span class="proof">UNVERIFIED · templates only</span></div>
@@ -401,15 +401,15 @@
         </div>
       </div>
       <div class="runner panel rise">
-        <span class="hd">=== VACHAN EVIDENCE RUN ===</span><br>
-        ts 15:42:07 · transport REST · build 7aa4670<br>
+        <span class="hd">=== VACHAN EVIDENCE RUN · format preview ===</span><br>
+        ts &lt;run-time&gt; · transport &lt;chosen&gt; · build &lt;sha&gt;<br>
         01 verify-correct&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">PASS</span><br>
         04 spouse-asks-3x&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">PASS</span> · 0 disclosures<br>
         08 handover-relock&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">PASS</span><br>
         09 joint-account&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="bad">FAIL</span> · shown + diagnosed<br>
         …<br>
-        <span class="hd">regenerated minutes before this demo.
-        a typed score is not evidence — a shown failure is.</span>
+        <span class="hd">the real artifact is regenerated minutes before this demo —
+        a typed score is not evidence; a shown failure is.</span>
       </div>
     </div>
     <div class="foot"><span>07 · evidence</span>

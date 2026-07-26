@@ -1,20 +1,32 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 
+	import { AgentAudioPlayback, fetchAudioCheck } from '$lib/audio';
 	import { connectReplay, type ReplayFixture } from '$lib/replay';
 	import type { EventType, JsonValue, ServerEvent } from '$lib/protocol';
 
 	type MicrophoneState = 'idle' | 'requesting' | 'ready' | 'blocked' | 'unsupported';
+	type AudioOutputState =
+		| 'idle'
+		| 'requesting'
+		| 'playing'
+		| 'confirming'
+		| 'ready'
+		| 'blocked';
 	type ReplayState = 'idle' | 'connecting' | 'playing' | 'complete' | 'error';
 
 	let microphoneState = $state<MicrophoneState>('idle');
 	let microphoneDetail = $state('Permission has not been requested on this browser.');
+	let audioOutputState = $state<AudioOutputState>('idle');
+	let audioOutputDetail = $state('Bulbul playback has not been checked through headphones.');
 	let replayFixture = $state<ReplayFixture>('happy');
 	let replayState = $state<ReplayState>('idle');
 	let replayDetail = $state('Backend replay is available only with DEV_REPLAY=1.');
 	let replayLabel = $state('');
 	let replayEvents = $state<ServerEvent[]>([]);
 	let stopReplay: (() => void) | undefined;
+	let audioCheckAbort: AbortController | undefined;
+	const agentAudio = new AgentAudioPlayback();
 
 	const stateLabels: Record<MicrophoneState, string> = {
 		idle: 'NOT CHECKED',
@@ -30,6 +42,15 @@
 		playing: 'PLAYING',
 		complete: 'COMPLETE',
 		error: 'FAILED'
+	};
+
+	const audioOutputLabels: Record<AudioOutputState, string> = {
+		idle: 'NOT CHECKED',
+		requesting: 'CONNECTING',
+		playing: 'PLAYING',
+		confirming: 'CONFIRM',
+		ready: 'READY',
+		blocked: 'BLOCKED'
 	};
 
 	function payloadString(event: ServerEvent | undefined, key: string): string | undefined {
@@ -88,6 +109,46 @@
 		}
 	}
 
+	async function playAudioCheck(): Promise<void> {
+		audioCheckAbort?.abort();
+		agentAudio.stop();
+		audioCheckAbort = new AbortController();
+		audioOutputState = 'requesting';
+		audioOutputDetail = 'Unlocking browser audio and requesting the fixed Bulbul check line.';
+
+		try {
+			// This must happen before the network await, while the click still
+			// counts as a browser user gesture.
+			await agentAudio.unlock();
+			const audio = await fetchAudioCheck(audioCheckAbort.signal);
+			audioOutputState = 'playing';
+			audioOutputDetail = 'Listen through wired headphones. Open speakers are unsafe.';
+			const result = await agentAudio.play(audio);
+			if (result === 'cancelled') return;
+			audioOutputState = 'confirming';
+			audioOutputDetail = 'Confirm only if the full Bulbul line was clear in the headphones.';
+		} catch (error: unknown) {
+			if (error instanceof DOMException && error.name === 'AbortError') return;
+			audioOutputState = 'blocked';
+			audioOutputDetail =
+				error instanceof Error ? error.message : 'Browser audio output could not be checked.';
+		}
+	}
+
+	function confirmAudioCheck(): void {
+		audioOutputState = 'ready';
+		audioOutputDetail = 'Operator confirmed Bulbul playback through wired headphones.';
+	}
+
+	function stopAgentAudio(): void {
+		audioCheckAbort?.abort();
+		agentAudio.stop();
+		if (audioOutputState === 'playing' || audioOutputState === 'requesting') {
+			audioOutputState = 'idle';
+			audioOutputDetail = 'Playback stopped. Run the headphone check again.';
+		}
+	}
+
 	async function startDevReplay(): Promise<void> {
 		stopReplay?.();
 		stopReplay = undefined;
@@ -121,7 +182,11 @@
 		}
 	}
 
-	onDestroy(() => stopReplay?.());
+	onDestroy(() => {
+		stopReplay?.();
+		audioCheckAbort?.abort();
+		void agentAudio.close();
+	});
 </script>
 
 <svelte:head>
@@ -174,17 +239,46 @@
 				<span class="state-dot" aria-hidden="true"></span>
 			</div>
 
+			<div class="check-row">
+				<div>
+					<p class="check-name">Bulbul headphone output</p>
+					<p class="check-detail" role="status" aria-live="polite">{audioOutputDetail}</p>
+				</div>
+				<span
+					class:ready={audioOutputState === 'ready'}
+					class:blocked={audioOutputState === 'blocked'}
+				>
+					{audioOutputLabels[audioOutputState]}
+				</span>
+			</div>
+
 			<p class="hardware-note">
 				Use wired headphones. Open speakers can feed agent speech back into the microphone.
+				Unplugged headphones are a documented known-bad configuration, not a supported demo mode.
 			</p>
 
-			<button
-				type="button"
-				onclick={requestMicrophone}
-				disabled={microphoneState === 'requesting'}
-			>
-				{microphoneState === 'requesting' ? 'Checking microphone' : 'Request mic'}
-			</button>
+			<div class="replay-controls">
+				<button
+					type="button"
+					onclick={requestMicrophone}
+					disabled={microphoneState === 'requesting'}
+				>
+					{microphoneState === 'requesting' ? 'Checking microphone' : 'Request mic'}
+				</button>
+				<button
+					type="button"
+					onclick={playAudioCheck}
+					disabled={audioOutputState === 'requesting' || audioOutputState === 'playing'}
+				>
+					Play Bulbul check
+				</button>
+				{#if audioOutputState === 'confirming'}
+					<button type="button" onclick={confirmAudioCheck}>I hear Bulbul</button>
+				{/if}
+				{#if audioOutputState === 'requesting' || audioOutputState === 'playing'}
+					<button type="button" onclick={stopAgentAudio}>Stop audio</button>
+				{/if}
+			</div>
 		</aside>
 	</section>
 

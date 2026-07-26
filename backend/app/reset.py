@@ -24,6 +24,9 @@ class DemoResetRequest(ProtocolModel):
 async def reset_demo(payload: DemoResetRequest, request: Request) -> ResetResponse:
     """Run the one sanctioned demo-data wipe outside active calls only."""
     assert payload.confirmation == RESET_CONFIRMATION
+    reconciler = getattr(request.app.state, "orphan_call_reconciler", None)
+    if callable(reconciler):
+        reconciler()
     try:
         seeded_ids = reset_and_reseed_demo_cases(_ledger_for(request))
     except ActiveCallExists as error:

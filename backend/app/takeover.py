@@ -311,11 +311,26 @@ def _registry(request: Request) -> TakeoverRegistry:
     return registry
 
 
+def _reconcile_orphan(request: Request, call_id: str) -> bool:
+    reconciler = getattr(request.app.state, "orphan_call_reconciler", None)
+    if not callable(reconciler):
+        return False
+    return bool(reconciler(call_id))
+
+
 @router.post("/api/takeover", response_model=ServerEvent)
 async def request_takeover(payload: TakeoverRequest, request: Request) -> ServerEvent:
     """Execute break-glass ordering and return its persisted state event."""
     takeover = _registry(request).get(payload.call_id)
     if takeover is None:
+        if _reconcile_orphan(request, payload.call_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Call runtime was lost and the durable call ended safely as "
+                    "ENDED_TECHNICAL. Rerun preflight."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Active call was not found.",
@@ -384,8 +399,16 @@ async def end_operator_call(payload: EndCallRequest, request: Request) -> Server
             ts=result.ts,
             payload={
                 "call_state": CallState.ENDED.value,
-                "disposition": Disposition.ENDED_OPERATOR.value,
-                "reason": payload.reason,
+                "disposition": getattr(
+                    result,
+                    "disposition",
+                    Disposition.ENDED_OPERATOR,
+                ).value,
+                "reason": (
+                    "orphaned by process restart"
+                    if getattr(result, "disposition", None) is Disposition.ENDED_TECHNICAL
+                    else payload.reason
+                ),
             },
         )
     try:

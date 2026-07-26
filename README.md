@@ -173,6 +173,11 @@ under `/ws` are vite-proxied to :8000. The frozen schema is bead `sarvam-3s2`.
 | GET | `/healthz` | Liveness |
 <!-- mounted-api:end -->
 
+The completed PCM transport spike is development-only, not part of the public API surface.
+`/audio-spike` returns 404 and `/ws/spike/stt` closes before reading the backend credential or
+opening Saaras unless **both** local processes start with `VACHAN_ENABLE_AUDIO_SPIKE=1`. Never set
+that flag for the public tunnel, production preview, rehearsal, or stage demo.
+
 ### Frozen contract
 
 The v0 evidence route is now mounted above. This section remains as the marker-delimited list of

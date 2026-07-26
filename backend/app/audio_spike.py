@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from collections.abc import AsyncIterator, Callable
+import os
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
@@ -15,6 +16,7 @@ from sarvamai import AsyncSarvamAI
 SAMPLE_RATE = 16_000
 MAX_PCM_CHUNK_BYTES = 64 * 1024
 SPIKE_PATH = "/ws/spike/stt"
+AUDIO_SPIKE_ENV = "VACHAN_ENABLE_AUDIO_SPIKE"
 
 router = APIRouter(tags=["audio-spike"])
 
@@ -35,6 +37,12 @@ class SarvamStreamingSocket(Protocol):
 
 
 StreamFactory = Callable[[str], Any]
+
+
+def audio_spike_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Return whether the development-only relay was explicitly enabled."""
+    source = os.environ if environment is None else environment
+    return source.get(AUDIO_SPIKE_ENV) == "1"
 
 
 @asynccontextmanager
@@ -149,8 +157,12 @@ async def relay_audio_stream(
 
 @router.websocket(SPIKE_PATH)
 async def audio_spike_websocket(websocket: WebSocket) -> None:
-    """Accept browser PCM16 frames and return Saaras stream messages."""
+    """Accept browser PCM16 only when the development relay is explicitly enabled."""
     await websocket.accept()
+    if not audio_spike_enabled():
+        await websocket.close(code=1008, reason="Development audio spike is disabled")
+        return
+
     api_key = getattr(websocket.app.state, "sarvam_api_key", None)
     if not api_key:
         await websocket.send_json(

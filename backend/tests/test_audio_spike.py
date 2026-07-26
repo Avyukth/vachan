@@ -9,11 +9,14 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.audio_spike import (
+    AUDIO_SPIKE_ENV,
     MAX_PCM_CHUNK_BYTES,
     SAMPLE_RATE,
     SPIKE_PATH,
+    audio_spike_enabled,
     encode_pcm_chunk,
     router,
 )
@@ -28,6 +31,22 @@ def test_pcm_chunk_encoding_is_lossless() -> None:
 def test_invalid_pcm_chunks_are_rejected(chunk: bytes) -> None:
     with pytest.raises(ValueError):
         encode_pcm_chunk(chunk)
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ({}, False),
+        ({AUDIO_SPIKE_ENV: ""}, False),
+        ({AUDIO_SPIKE_ENV: "true"}, False),
+        ({AUDIO_SPIKE_ENV: "1"}, True),
+    ],
+)
+def test_audio_spike_requires_exact_development_opt_in(
+    environment: dict[str, str],
+    expected: bool,
+) -> None:
+    assert audio_spike_enabled(environment) is expected
 
 
 class FakeResponse:
@@ -67,7 +86,37 @@ class FakeSarvamStream:
             yield await self.responses.get()
 
 
-def test_websocket_relays_binary_pcm_and_transcript() -> None:
+def test_websocket_is_closed_by_default_without_opening_sarvam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(AUDIO_SPIKE_ENV, raising=False)
+    stream_factory_called = False
+
+    @asynccontextmanager
+    async def forbidden_factory(api_key: str) -> AsyncIterator[FakeSarvamStream]:
+        nonlocal stream_factory_called
+        stream_factory_called = True
+        yield FakeSarvamStream()
+
+    app = FastAPI()
+    app.state.sarvam_api_key = "test-key"
+    app.state.sarvam_stream_factory = forbidden_factory
+    app.include_router(router)
+
+    with (
+        TestClient(app).websocket_connect(SPIKE_PATH) as websocket,
+        pytest.raises(WebSocketDisconnect) as disconnect,
+    ):
+        websocket.receive_json()
+
+    assert disconnect.value.code == 1008
+    assert stream_factory_called is False
+
+
+def test_explicitly_enabled_websocket_relays_binary_pcm_and_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUDIO_SPIKE_ENV, "1")
     fake_stream = FakeSarvamStream()
 
     @asynccontextmanager

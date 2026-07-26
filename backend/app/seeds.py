@@ -164,6 +164,6 @@ class DemoSeedRepository(Protocol):
 
 
 def reset_and_reseed_demo_cases(repository: DemoSeedRepository) -> tuple[str, ...]:
-    """Reseed exactly the two governed mock cases and return their IDs."""
+    """Reseed the governed mock case set and return its stable IDs."""
     repository.replace_demo_cases(DEMO_CASES, demo_time_anchor=DEMO_TIME_ANCHOR)
     return tuple(case.case_id for case in DEMO_CASES)

@@ -92,8 +92,6 @@ limitation only after its named bead is closed with an exact record of what was 
   and closeout remain pending. Do not claim every promise transition is proven atomic yet.
 - `sarvam-bfo.1`: not every terminal disposition path is yet serialized through one atomic
   event-plus-call-row boundary.
-- `sarvam-y8r.1`: production verification evidence currently records overall pass/fail but does
-  not yet persist the complete safe per-field result shape atomically with attempt advancement.
 - `sarvam-ls0.1`: the permission decision is recorded before promise writes, but the asynchronous
   promise mutation is not yet owned by the same authoritative gated execution boundary.
 - `sarvam-a1m`: malformed promise amount/date facts still need stricter fail-closed validation.

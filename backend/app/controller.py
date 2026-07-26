@@ -29,10 +29,15 @@ from app.db import EvidenceLedger, TerminalDispositionConflict
 from app.gated_tools import GatedToolExecutor, ToolFacts
 from app.guard import OutputBlockedEvent, OutputGuardContext, classify_block, guard_for_tts
 from app.promise import (
+    AmbiguousDateError,
+    InvalidAmountError,
+    InvalidPromiseDateError,
     PromiseEngine,
     PromiseEvent,
     PromiseEventType,
+    PromiseNormalizationError,
     SQLitePromiseRepository,
+    amount_in_hindi_words,
     normalize_promise_date,
 )
 from app.seeds import MockCaseSeed
@@ -46,7 +51,7 @@ from app.third_party import (
     protected_case_values,
     route_speaker_utterance,
 )
-from app.tools import ToolName
+from app.tools import ToolDecision, ToolName, ToolPermissionDenied
 from app.verification import (
     ExpectedVerification,
     VerificationSession,
@@ -99,6 +104,41 @@ class InvalidModelEnvelope(ValueError):
 
 class _DuplicateDisposition(RuntimeError):
     """Internal rollback signal for an already-persisted identical outcome."""
+
+
+_CORRECTABLE_PROMISE_STATES = frozenset(
+    {
+        PromiseState.CANDIDATE,
+        PromiseState.CORRECTED,
+        PromiseState.READ_BACK,
+    }
+)
+
+
+def _validated_model_amount_minor(amount_minor: int | None) -> int:
+    """Accept only supported positive whole-rupee values expressed in paise."""
+
+    if (
+        isinstance(amount_minor, bool)
+        or not isinstance(amount_minor, int)
+        or amount_minor <= 0
+        or amount_minor % 100
+    ):
+        raise InvalidAmountError("model amount must be positive whole rupees in paise")
+    # Read-back is part of the write contract, so reject values that its
+    # deterministic renderer cannot safely express before authorization.
+    amount_in_hindi_words(amount_minor // 100)
+    return amount_minor
+
+
+def _promise_fact_denial_code(error: PromiseNormalizationError) -> str:
+    """Map normalization failures to redacted, stable evidence codes."""
+
+    if isinstance(error, AmbiguousDateError):
+        return "ambiguous_date"
+    if isinstance(error, InvalidPromiseDateError):
+        return "invalid_date"
+    return "invalid_amount"
 
 
 def _action_payload(response: Mapping[str, object]) -> dict[str, object]:
@@ -592,20 +632,67 @@ class DialogueController:
             return render_template(route.template_id), None
         return render_template(validated_template), None
 
-    async def _prepare_promise(self, transcript: str, amount_minor: int, date_phrase: str) -> str:
-        normalized_date = normalize_promise_date(
-            date_phrase,
-            demo_time_anchor=self.clock(),
+    async def _invalid_promise_action(
+        self,
+        tool: ToolName,
+        *,
+        reason_code: str,
+    ) -> ToolPermissionDenied:
+        """Persist one redacted typed denial without exposing submitted facts."""
+
+        snapshot = self.snapshot
+        decision = ToolDecision(
+            tool=tool,
+            allowed=False,
+            identity_state=snapshot.identity.value,
+            call_state=snapshot.call.value,
+            promise_state=snapshot.promise.value,
+            reason=f"invalid_action_facts={reason_code}",
         )
+        await self.ledger.append_tool_decision(
+            call_id=self.call_id,
+            ts=self.clock(),
+            decision=decision,
+            state=snapshot,
+        )
+        return ToolPermissionDenied(decision)
+
+    async def _prepare_promise(
+        self,
+        transcript: str,
+        amount_minor: int | None,
+        date_phrase: str | None,
+    ) -> str:
+        if amount_minor is None:
+            raise await self._invalid_promise_action(
+                ToolName.CREATE_PROMISE_CANDIDATE,
+                reason_code="missing_amount",
+            )
+        if date_phrase is None:
+            raise await self._invalid_promise_action(
+                ToolName.CREATE_PROMISE_CANDIDATE,
+                reason_code="missing_date",
+            )
+        try:
+            validated_amount = _validated_model_amount_minor(amount_minor)
+            normalized_date = normalize_promise_date(
+                date_phrase,
+                demo_time_anchor=self.clock(),
+            )
+        except PromiseNormalizationError as error:
+            raise await self._invalid_promise_action(
+                ToolName.CREATE_PROMISE_CANDIDATE,
+                reason_code=_promise_fact_denial_code(error),
+            ) from error
         mutation = self._promise.plan_candidate(
             caller_phrase=transcript,
-            amount=amount_minor // 100,
+            amount=validated_amount // 100,
             date_phrase=normalized_date.isoformat(),
         )
         event = await self._tools.execute(
             ToolName.CREATE_PROMISE_CANDIDATE,
             facts=ToolFacts(
-                amount_minor=amount_minor,
+                amount_minor=validated_amount,
                 date_is_allowed=True,
             ),
             operation=lambda: self._promise.apply_candidate(mutation),
@@ -630,14 +717,56 @@ class DialogueController:
         amount_minor: int | None,
         date_phrase: str | None,
     ) -> str:
+        if amount_minor is None and date_phrase is None:
+            raise await self._invalid_promise_action(
+                ToolName.CORRECT_PROMISE_CANDIDATE,
+                reason_code="missing_correction",
+            )
+        try:
+            validated_amount = (
+                None if amount_minor is None else _validated_model_amount_minor(amount_minor)
+            )
+            normalized_date = (
+                None
+                if date_phrase is None
+                else normalize_promise_date(
+                    date_phrase,
+                    demo_time_anchor=self.clock(),
+                ).isoformat()
+            )
+        except PromiseNormalizationError as error:
+            raise await self._invalid_promise_action(
+                ToolName.CORRECT_PROMISE_CANDIDATE,
+                reason_code=_promise_fact_denial_code(error),
+            ) from error
+
+        candidate = self._promise.candidate
+        candidate_exists = (
+            candidate is not None and self._promise.state in _CORRECTABLE_PROMISE_STATES
+        )
+        candidate_committed = self._promise.state is PromiseState.COMMITTED
+        facts = ToolFacts(
+            candidate_exists=candidate_exists,
+            candidate_committed=candidate_committed,
+        )
+        if not candidate_exists or candidate_committed:
+            result = await self._tools.execute(
+                ToolName.CORRECT_PROMISE_CANDIDATE,
+                facts=facts,
+                operation=lambda: None,
+            )
+            raise ControllerToolEffectError(
+                f"invalid correction unexpectedly authorized with result {result!r}"
+            )
+
         mutation = self._promise.plan_correction(
             caller_phrase=transcript,
-            amount=None if amount_minor is None else amount_minor // 100,
-            date_phrase=date_phrase,
+            amount=None if validated_amount is None else validated_amount // 100,
+            date_phrase=normalized_date,
         )
         event = await self._tools.execute(
             ToolName.CORRECT_PROMISE_CANDIDATE,
-            facts=ToolFacts(candidate_exists=True),
+            facts=facts,
             operation=lambda: self._promise.apply_candidate(mutation),
         )
         if not isinstance(event, PromiseEvent) or self._promise.state is not PromiseState.CORRECTED:
@@ -710,25 +839,25 @@ class DialogueController:
         if not validation.accepted:
             return render_template(TemplateId.CLARIFY), None
         if action.intent is Intent.OFFER_PROMISE:
-            if action.amount_minor is None or not action.date_phrase:
+            try:
+                response = await self._prepare_promise(
+                    transcript,
+                    action.amount_minor,
+                    action.date_phrase,
+                )
+            except ToolPermissionDenied:
                 return render_template(TemplateId.CLARIFY), None
-            return (
-                await self._prepare_promise(
-                    transcript,
-                    action.amount_minor,
-                    action.date_phrase,
-                ),
-                None,
-            )
+            return response, None
         if action.intent is Intent.CORRECT_PROMISE:
-            return (
-                await self._correct_promise(
+            try:
+                response = await self._correct_promise(
                     transcript,
                     action.amount_minor,
                     action.date_phrase,
-                ),
-                None,
-            )
+                )
+            except ToolPermissionDenied:
+                return render_template(TemplateId.CLARIFY), None
+            return response, None
         if action.intent is Intent.CONFIRM:
             return await self._confirm_promise()
         if action.intent is Intent.DENY and self.snapshot.promise is PromiseState.READ_BACK:

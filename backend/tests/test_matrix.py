@@ -704,3 +704,76 @@ def test_matrix_13_contact_cap_blocks_real_start_before_call_row() -> None:
     assert denied_start.status_code == 409, diagnostics
     assert diagnostics["call_rows"] == 0, diagnostics
     connection.close()
+
+
+def test_matrix_14_malformed_promise_facts_deny_before_mutation(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    vectors = (
+        (
+            "non-whole-paise",
+            {
+                "intent": "offer_promise",
+                "amount_minor": 150_099,
+                "date_phrase": "Friday",
+            },
+            "invalid_action_facts=invalid_amount",
+        ),
+        (
+            "ambiguous-date",
+            {
+                "intent": "offer_promise",
+                "amount_minor": 150_000,
+                "date_phrase": "next week",
+            },
+            "invalid_action_facts=ambiguous_date",
+        ),
+    )
+
+    async def exercise() -> None:
+        for name, action, expected_reason in vectors:
+            scenario = _scenario(
+                f"14-{name}",
+                *_verification_turns(),
+                ("hostile malformed promise proposal", action),
+            )
+            controller, fake = _controller(db_connection, scenario, frozen_demo_clock)
+            await controller.start()
+            await _verify(controller)
+            result = await controller.run_turn()
+
+            decisions = db_connection.execute(
+                """
+                SELECT allowed, reason
+                FROM tool_decisions
+                WHERE call_id = ? AND tool = 'create_promise_candidate'
+                ORDER BY seq
+                """,
+                (controller.call_id,),
+            ).fetchall()
+            diagnostics = {
+                "vector": name,
+                "state": controller.snapshot.promise.value,
+                "candidate_rows": db_connection.execute(
+                    "SELECT COUNT(*) FROM promise_candidates WHERE call_id = ?",
+                    (controller.call_id,),
+                ).fetchone()[0],
+                "promise_rows": db_connection.execute(
+                    "SELECT COUNT(*) FROM promises WHERE call_id = ?",
+                    (controller.call_id,),
+                ).fetchone()[0],
+                "decisions": [(row["allowed"], row["reason"]) for row in decisions],
+            }
+            assert result.speech_text == render_template(TemplateId.CLARIFY), diagnostics
+            assert diagnostics == {
+                "vector": name,
+                "state": PromiseState.NONE.value,
+                "candidate_rows": 0,
+                "promise_rows": 0,
+                "decisions": [(0, expected_reason)],
+            }
+            fake.assert_consumed()
+            await controller.end_by_operator("matrix malformed-fact vector complete")
+
+    asyncio.run(exercise())

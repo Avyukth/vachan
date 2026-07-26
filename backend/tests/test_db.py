@@ -1,0 +1,341 @@
+"""SQLite evidence-ledger schema and integrity tests."""
+
+import asyncio
+import sqlite3
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.contracts import Disposition, LedgerEventType, StateSnapshot
+from app.db import (
+    SCHEMA_VERSION,
+    ActiveCallExists,
+    EvidenceLedger,
+    derive_idempotency_key,
+    migrate_schema,
+)
+from app.seeds import DEMO_CASES, DEMO_TIME_ANCHOR, reset_and_reseed_demo_cases
+from app.states import CallState, IdentityState, PromiseState
+
+NOW = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+EXPECTED_TABLES = {
+    "calls",
+    "cases",
+    "events",
+    "operator_notes",
+    "promise_candidates",
+    "promises",
+    "tool_decisions",
+}
+
+
+@pytest.fixture
+def connection() -> sqlite3.Connection:
+    database = sqlite3.connect(":memory:", isolation_level=None)
+    database.row_factory = sqlite3.Row
+    database.execute("PRAGMA foreign_keys = ON")
+    migrate_schema(database)
+    try:
+        yield database
+    finally:
+        database.close()
+
+
+@pytest.fixture
+def ledger(connection: sqlite3.Connection) -> EvidenceLedger:
+    return EvidenceLedger(connection)
+
+
+def seed_cases(ledger: EvidenceLedger) -> None:
+    assert reset_and_reseed_demo_cases(ledger) == ("case-rakesh-001", "case-capped-001")
+
+
+def start_call(
+    connection: sqlite3.Connection,
+    *,
+    call_id: str = "call-001",
+    case_id: str = "case-rakesh-001",
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO calls (id, case_id, started, transport)
+        VALUES (?, ?, ?, ?)
+        """,
+        (call_id, case_id, NOW.isoformat(), "streaming_pcm16_ws"),
+    )
+
+
+def state_snapshot() -> StateSnapshot:
+    return StateSnapshot(
+        call=CallState.ACTIVE,
+        identity=IdentityState.CONFIRMED,
+        promise=PromiseState.NONE,
+    )
+
+
+def insert_candidate(
+    connection: sqlite3.Connection,
+    *,
+    candidate_id: str = "candidate-001",
+    call_id: str = "call-001",
+    revision: int = 1,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO promise_candidates (
+            id, call_id, caller_phrase, amount_minor, date_iso, revision,
+            read_back_ts, confirmed_ts
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            candidate_id,
+            call_id,
+            "pandrah sau, Friday",
+            150_000,
+            "2026-07-31",
+            revision,
+            (NOW + timedelta(seconds=1)).isoformat(),
+            (NOW + timedelta(seconds=2)).isoformat(),
+        ),
+    )
+
+
+def test_schema_migration_is_idempotent_and_has_exactly_seven_domain_tables(
+    connection: sqlite3.Connection,
+) -> None:
+    migrate_schema(connection)
+    tables = {
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT name FROM sqlite_schema
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            """
+        )
+    }
+    assert tables == EXPECTED_TABLES
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+def test_case_schema_has_no_generic_prompt_log_or_blocked_draft_columns(
+    connection: sqlite3.Connection,
+) -> None:
+    event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+    assert event_columns == {
+        "call_id",
+        "seq",
+        "ts",
+        "type",
+        "state_before",
+        "state_after",
+        "redacted_reason",
+    }
+    assert not {"payload", "draft", "body", "prompt", "expected_value"} & event_columns
+
+
+def test_database_prevents_two_active_calls_for_one_case(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="calls.case_id"):
+        start_call(connection, call_id="call-002")
+
+
+def test_idempotency_key_is_candidate_revision_and_duplicate_insert_fails(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    insert_candidate(connection)
+
+    key = asyncio.run(
+        ledger.commit_promise(
+            call_id="call-001",
+            candidate_id="candidate-001",
+            revision=1,
+            amount_minor=150_000,
+            date_iso="2026-07-31",
+            committed_ts=NOW + timedelta(seconds=3),
+        )
+    )
+    assert key == derive_idempotency_key("candidate-001", 1) == "candidate-001:1"
+
+    with pytest.raises(sqlite3.IntegrityError):
+        asyncio.run(
+            ledger.commit_promise(
+                call_id="call-001",
+                candidate_id="candidate-001",
+                revision=1,
+                amount_minor=150_000,
+                date_iso="2026-07-31",
+                committed_ts=NOW + timedelta(seconds=4),
+            )
+        )
+    assert connection.execute("SELECT COUNT(*) FROM promises").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("table", "setup_sql", "update_sql"),
+    [
+        (
+            "events",
+            """
+            INSERT INTO events (
+                call_id, seq, ts, type, state_before, state_after, redacted_reason
+            ) VALUES ('call-001', 1, '2026-07-26T12:00:00+00:00', 'TOOL_DECISION',
+                      '{"call":"ACTIVE"}', '{"call":"ACTIVE"}', 'allowed')
+            """,
+            "UPDATE events SET redacted_reason = 'edited'",
+        ),
+        (
+            "promises",
+            """
+            INSERT INTO promises (
+                call_id, candidate_id, candidate_revision, amount_minor,
+                date_iso, idempotency_key, committed_ts
+            ) VALUES ('call-001', 'candidate-001', 1, 150000, '2026-07-31',
+                      'candidate-001:1', '2026-07-26T12:00:03+00:00')
+            """,
+            "UPDATE promises SET amount_minor = 1",
+        ),
+        (
+            "operator_notes",
+            """
+            INSERT INTO operator_notes (call_id, ts, author, text)
+            VALUES ('call-001', '2026-07-26T12:00:00+00:00', 'Priya', 'Mock note')
+            """,
+            "UPDATE operator_notes SET text = 'edited'",
+        ),
+    ],
+)
+def test_evidence_tables_reject_updates(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+    table: str,
+    setup_sql: str,
+    update_sql: str,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    if table == "promises":
+        insert_candidate(connection)
+    connection.execute(setup_sql)
+
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        connection.execute(update_sql)
+
+
+def test_event_sequence_trigger_rejects_gaps(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    snapshot_json = '{"call":"ACTIVE","identity":"CONFIRMED","promise":"NONE"}'
+
+    with pytest.raises(sqlite3.IntegrityError, match="next monotonic value"):
+        connection.execute(
+            """
+            INSERT INTO events (
+                call_id, seq, ts, type, state_before, state_after, redacted_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "call-001",
+                2,
+                NOW.isoformat(),
+                "TOOL_DECISION",
+                snapshot_json,
+                snapshot_json,
+                "gap_attempt",
+            ),
+        )
+
+
+def test_concurrent_event_writes_have_no_gaps_or_duplicates(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    snapshot = state_snapshot()
+
+    async def append(index: int) -> int:
+        return await ledger.append_event(
+            call_id="call-001",
+            ts=NOW + timedelta(milliseconds=index),
+            event_type=LedgerEventType.TOOL_DECISION,
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason=f"decision_{index}",
+        )
+
+    async def run_concurrent_writes() -> list[int]:
+        return list(await asyncio.gather(*(append(index) for index in range(20))))
+
+    sequences = asyncio.run(run_concurrent_writes())
+
+    assert sorted(sequences) == list(range(1, 21))
+    rows = connection.execute(
+        "SELECT seq FROM events WHERE call_id = ? ORDER BY seq",
+        ("call-001",),
+    ).fetchall()
+    assert [row["seq"] for row in rows] == list(range(1, 21))
+
+
+def test_demo_reset_is_scoped_and_refused_during_active_call(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    connection.execute(
+        """
+        INSERT INTO cases (
+            id, name, eligibility, contact_cap_remaining, mock_label,
+            verification_birth_day, verification_birth_month,
+            verification_reference_last4, lender_name, outstanding_minor,
+            emi_schedule_json, demo_time_anchor
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "non-demo-case",
+            "Non-demo control",
+            True,
+            1,
+            "NOT DEMO",
+            1,
+            1,
+            "0000",
+            "Control",
+            0,
+            "[]",
+            DEMO_TIME_ANCHOR.isoformat(),
+        ),
+    )
+    start_call(connection)
+
+    with pytest.raises(ActiveCallExists):
+        ledger.replace_demo_cases(DEMO_CASES, demo_time_anchor=DEMO_TIME_ANCHOR)
+
+    connection.execute(
+        """
+        UPDATE calls
+        SET ended = ?, disposition = ?
+        WHERE id = ?
+        """,
+        (
+            (NOW + timedelta(minutes=1)).isoformat(),
+            Disposition.ENDED_OPERATOR.value,
+            "call-001",
+        ),
+    )
+    ledger.replace_demo_cases(DEMO_CASES, demo_time_anchor=DEMO_TIME_ANCHOR)
+
+    ids = {row["id"] for row in connection.execute("SELECT id FROM cases ORDER BY id").fetchall()}
+    assert ids == {"case-capped-001", "case-rakesh-001", "non-demo-case"}
+    assert connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0

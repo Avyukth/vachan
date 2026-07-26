@@ -197,6 +197,20 @@
         "temperature": "number",
         "max_tokens": "integer"
       },
+      "nested_fields": {
+        "messages[]": {
+          "required_fields": [
+            "role",
+            "content"
+          ],
+          "optional_fields": [
+            "name"
+          ]
+        }
+      },
+      "optional_value_types": {
+        "messages[].name": "string"
+      },
       "expected_values": {
         "model": "sarvam-30b",
         "temperature": 0.1,
@@ -215,10 +229,52 @@
         "usage",
         "system_fingerprint"
       ],
+      "nested_fields": {
+        "choices[]": {
+          "required_fields": [
+            "message"
+          ],
+          "optional_fields": [
+            "index",
+            "finish_reason",
+            "logprobs"
+          ]
+        },
+        "choices[].message": {
+          "required_fields": [
+            "content"
+          ],
+          "optional_fields": [
+            "role",
+            "refusal",
+            "tool_calls",
+            "function_call",
+            "annotations",
+            "audio"
+          ]
+        }
+      },
       "value_types": {
         "choices": "array[object]",
         "choices[].message": "object",
         "choices[].message.content": "string"
+      },
+      "optional_value_types": {
+        "id": "string",
+        "object": "string",
+        "created": "integer",
+        "model": "string",
+        "usage": "object",
+        "system_fingerprint": "string|null",
+        "choices[].index": "integer",
+        "choices[].finish_reason": "string|null",
+        "choices[].logprobs": "object|null",
+        "choices[].message.role": "string",
+        "choices[].message.refusal": "string|null",
+        "choices[].message.tool_calls": "array[object]",
+        "choices[].message.function_call": "object|null",
+        "choices[].message.annotations": "array[object]",
+        "choices[].message.audio": "object|null"
       }
     },
     "dialogue_adapter_response": {
@@ -226,6 +282,21 @@
         "choices"
       ],
       "optional_fields": [],
+      "nested_fields": {
+        "choices[]": {
+          "required_fields": [
+            "message"
+          ],
+          "optional_fields": []
+        },
+        "choices[].message": {
+          "required_fields": [
+            "role",
+            "content"
+          ],
+          "optional_fields": []
+        }
+      },
       "value_types": {
         "choices": "array[object]",
         "choices[].message": "object",
@@ -272,13 +343,16 @@
     },
     "response": {
       "required_fields": [
-        "request_id",
         "audios"
       ],
-      "optional_fields": [],
+      "optional_fields": [
+        "request_id"
+      ],
       "value_types": {
-        "request_id": "string",
-        "audios": "array[string]"
+        "audios": "nonempty-array[string]"
+      },
+      "optional_value_types": {
+        "request_id": "string|null"
       }
     },
     "dialogue_adapter_response": {

@@ -84,12 +84,10 @@ def _matches_type(value: object, expected: str) -> bool:
     if expected == "object|null":
         return value is None or isinstance(value, Mapping)
     if expected == "array[object]":
-        return (
-            isinstance(value, list)
-            and bool(value)
-            and all(isinstance(item, Mapping) for item in value)
-        )
+        return isinstance(value, list) and all(isinstance(item, Mapping) for item in value)
     if expected == "array[string]":
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    if expected == "nonempty-array[string]":
         return (
             isinstance(value, list) and bool(value) and all(isinstance(item, str) for item in value)
         )
@@ -122,7 +120,7 @@ def _optional_values_at_path(payload: object, path: str) -> list[object]:
                     f"wrong value type path={path!r}: expected object, got {type(value).__name__}"
                 )
             if segment not in value:
-                return []
+                continue
             nested = value[segment]
             if is_array:
                 if not isinstance(nested, list):
@@ -572,6 +570,71 @@ def test_nested_stt_response_drift_names_the_required_field(
     )
     with pytest.raises(AssertionError, match=re.escape(diagnostic)):
         _assert_shape(payload, contract, label)
+
+
+def test_optional_tts_request_id_is_type_checked_only_when_present() -> None:
+    shapes = json.loads(SHAPES_PATH.read_text())
+    contract = shapes["text_to_speech"]["response"]
+    payload = json.loads(TTS_CAPTURE_PATH.read_text())
+
+    payload.pop("request_id")
+    _assert_shape(payload, contract, "production TTS response without request id")
+
+    payload["request_id"] = 7
+    with pytest.raises(
+        AssertionError,
+        match=re.escape("wrong optional value type path='request_id'"),
+    ):
+        _assert_shape(payload, contract, "production TTS response with invalid request id")
+
+
+def test_required_tts_audio_array_cannot_be_empty() -> None:
+    shapes = json.loads(SHAPES_PATH.read_text())
+    contract = shapes["text_to_speech"]["response"]
+    payload = json.loads(TTS_CAPTURE_PATH.read_text())
+    payload["audios"] = []
+
+    with pytest.raises(
+        AssertionError,
+        match=re.escape("wrong value type path='audios'; expected=nonempty-array[string]"),
+    ):
+        _assert_shape(payload, contract, "production TTS response")
+
+
+@pytest.mark.parametrize(
+    ("target", "diagnostic"),
+    [
+        (
+            "choice",
+            "production chat response.choices[]: undocumented fields=['undocumented_nested']",
+        ),
+        (
+            "message",
+            "production chat response.choices[].message: "
+            "undocumented fields=['undocumented_nested']",
+        ),
+    ],
+)
+def test_nested_chat_response_drift_is_rejected(target: str, diagnostic: str) -> None:
+    shapes = json.loads(SHAPES_PATH.read_text())
+    contract = shapes["chat_completion"]["response"]
+    payload: JsonObject = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"intent":"other"}',
+                }
+            }
+        ]
+    }
+    if target == "choice":
+        payload["choices"][0]["undocumented_nested"] = True
+    else:
+        payload["choices"][0]["message"]["undocumented_nested"] = True
+
+    with pytest.raises(AssertionError, match=re.escape(diagnostic)):
+        _assert_shape(payload, contract, "production chat response")
 
 
 def test_correct_verification_scenario_runs_through_scripted_network_boundary(

@@ -100,8 +100,15 @@ def _action_payload(response: Mapping[str, object]) -> dict[str, object]:
         raise InvalidModelEnvelope("chat response is missing typed action content") from error
     if not isinstance(content, str):
         raise InvalidModelEnvelope("chat action content must be a JSON string")
+    normalized = content.strip()
+    if normalized.startswith("```"):
+        first_newline = normalized.find("\n")
+        if first_newline != -1:
+            normalized = normalized[first_newline + 1 :]
+        if normalized.endswith("```"):
+            normalized = normalized[:-3].rstrip()
     try:
-        payload = json.loads(content)
+        payload = json.loads(normalized)
     except json.JSONDecodeError:
         return {"intent": "other"}
     return payload if isinstance(payload, dict) else {"intent": "other"}
@@ -157,6 +164,12 @@ class DialogueController:
     def snapshot(self) -> StateSnapshot:
         return self._coordinator.snapshot
 
+    @property
+    def coordinator(self) -> StateMachineCoordinator:
+        """Expose the single authoritative state boundary to call-scoped safety adapters."""
+
+        return self._coordinator
+
     async def start(self) -> None:
         """Create one active call and persist the complete startup path."""
 
@@ -169,11 +182,29 @@ class DialogueController:
             """,
             (self.call_id, self.case.case_id, self.clock().isoformat(), self.transport),
         )
+        await self._activate(reason_prefix="text_mode")
+
+    async def activate_existing_call(self) -> None:
+        """Attach policy state to a call row created by the preflight route."""
+
+        if self._started:
+            raise RuntimeError("call is already started")
+        row = self.ledger.connection.execute(
+            "SELECT disposition FROM calls WHERE id = ? AND case_id = ?",
+            (self.call_id, self.case.case_id),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("call row must exist before voice activation")
+        if row["disposition"] is not None:
+            raise ControllerClosedError("terminal call cannot be activated")
+        await self._activate(reason_prefix="voice")
+
+    async def _activate(self, *, reason_prefix: str) -> None:
         for target, reason in (
-            (CallState.PREFLIGHT, "text_mode_preflight"),
-            (CallState.READY, "text_mode_ready"),
-            (CallState.CONNECTING, "text_mode_connecting"),
-            (CallState.ACTIVE, "text_mode_active"),
+            (CallState.PREFLIGHT, f"{reason_prefix}_preflight"),
+            (CallState.READY, f"{reason_prefix}_ready"),
+            (CallState.CONNECTING, f"{reason_prefix}_connecting"),
+            (CallState.ACTIVE, f"{reason_prefix}_active"),
         ):
             await self._coordinator.transition(target, reason_code=reason)
         self._started = True
@@ -507,9 +538,18 @@ class DialogueController:
             raise RuntimeError("call must be started before processing a turn")
         if self.disposition is not None:
             raise ControllerClosedError("terminal call cannot process another turn")
-
         stt = await self.sarvam.transcribe(audio)
-        transcript = str(stt.get("transcript", ""))
+        return await self.run_transcript(str(stt.get("transcript", "")))
+
+    async def run_transcript(self, transcript: str) -> ControllerTurn:
+        """Run an already-finalized streaming transcript through policy and speech."""
+
+        if not self._started:
+            raise RuntimeError("call must be started before processing a turn")
+        if self.disposition is not None:
+            raise ControllerClosedError("terminal call cannot process another turn")
+        if not transcript.strip():
+            raise ValueError("finalized transcript must not be empty")
         context = build_llm_context(
             call_state=self.snapshot.call,
             identity_state=self.snapshot.identity,
@@ -539,6 +579,36 @@ class DialogueController:
             disposition=disposition,
         )
 
+    async def opening_turn(self) -> ControllerTurn:
+        """Speak the fixed blind greeting before any caller audio is processed."""
+
+        if not self._started:
+            raise RuntimeError("call must be started before the opening turn")
+        if self.disposition is not None:
+            raise ControllerClosedError("terminal call cannot speak an opening turn")
+        speech, audio_response = await self._speak(render_template(TemplateId.INTRO_ANTISCAM))
+        return ControllerTurn(
+            transcript="",
+            speech_text=speech,
+            audio_response=audio_response,
+            disposition=None,
+        )
+
+    async def speak_reviewed(self, text: str) -> ControllerTurn:
+        """Guard and synthesize a fixed operational line without invoking the model."""
+
+        if not self._started:
+            raise RuntimeError("call must be started before speaking")
+        if self.disposition is not None:
+            raise ControllerClosedError("terminal call cannot speak")
+        speech, audio_response = await self._speak(text)
+        return ControllerTurn(
+            transcript="",
+            speech_text=speech,
+            audio_response=audio_response,
+            disposition=None,
+        )
+
     async def read_mock_account(self) -> object:
         """Exercise the real structural account-read gate."""
 
@@ -546,6 +616,31 @@ class DialogueController:
             ToolName.READ_MOCK_ACCOUNT,
             operation=lambda: self.case.account,
         )
+
+    async def end_by_operator(self, reason: str) -> tuple[int, datetime]:
+        """End a normal active call with a required operator reason."""
+
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValueError("operator end reason must not be empty")
+        if self.disposition is not None:
+            raise ControllerClosedError("terminal call cannot be ended again")
+        if self.snapshot.call not in {CallState.ACTIVE, CallState.DEGRADED}:
+            raise ControllerClosedError("call is not active")
+
+        await self._coordinator.transition(
+            CallState.ENDED,
+            reason_code="operator_ended_normal_call",
+        )
+        timestamp = self.clock()
+        seq = await self.ledger.set_ended_operator(
+            call_id=self.call_id,
+            ts=timestamp,
+            reason=normalized_reason,
+            state=self.snapshot,
+        )
+        self.disposition = Disposition.ENDED_OPERATOR
+        return seq, timestamp
 
     async def duplicate_affirmative(self) -> None:
         """Replay one duplicate affirmative against the idempotent engine."""

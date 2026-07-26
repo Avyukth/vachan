@@ -354,3 +354,48 @@ def test_operator_routes_fail_closed_for_unknown_call() -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Active call was not found."}
+
+
+def test_operator_end_route_falls_back_for_a_registered_active_voice_call() -> None:
+    ended: list[tuple[str, str]] = []
+    takeover, _, _, _ = asyncio.run(make_takeover())
+
+    async def normal_ender(call_id: str, reason: str) -> OperatorEndResult:
+        ended.append((call_id, reason))
+        return OperatorEndResult(
+            call_id=call_id,
+            disposition_seq=7,
+            ts=NOW,
+        )
+
+    app = FastAPI()
+    registry = TakeoverRegistry()
+    registry.register(takeover)
+    app.state.takeover_sessions = registry
+    app.state.normal_call_ender = normal_ender
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/call/end",
+            json={
+                "api_version": "v0",
+                "call_id": "call-takeover-001",
+                "reason": "Rehearsal stopped before confirmation",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "api_version": "v0",
+        "type": "disposition",
+        "call_id": "call-takeover-001",
+        "seq": 7,
+        "ts": "2026-07-26T13:00:00Z",
+        "payload": {
+            "call_state": "ENDED",
+            "disposition": "ENDED_OPERATOR",
+            "reason": "Rehearsal stopped before confirmation",
+        },
+    }
+    assert ended == [("call-takeover-001", "Rehearsal stopped before confirmation")]

@@ -348,10 +348,45 @@ async def end_operator_call(payload: EndCallRequest, request: Request) -> Server
     """Allow only a required-reason ENDED_OPERATOR close after takeover."""
     registry = _registry(request)
     takeover = registry.get(payload.call_id)
-    if takeover is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Active call was not found.",
+    if takeover is None or takeover.snapshot.call is not CallState.OPERATOR_TAKEOVER:
+        normal_ender = getattr(request.app.state, "normal_call_ender", None)
+        if not callable(normal_ender):
+            if takeover is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Call is not awaiting an operator ending.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Active call was not found.",
+            )
+        try:
+            result = await normal_ender(payload.call_id, payload.reason)
+        except LookupError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Active call was not found.",
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A non-empty operator reason is required.",
+            ) from error
+        except RuntimeError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Call is not active.",
+            ) from error
+        return ServerEvent(
+            type=EventType.DISPOSITION,
+            call_id=result.call_id,
+            seq=result.disposition_seq,
+            ts=result.ts,
+            payload={
+                "call_state": CallState.ENDED.value,
+                "disposition": Disposition.ENDED_OPERATOR.value,
+                "reason": payload.reason,
+            },
         )
     try:
         result = await takeover.end_with_reason(payload.reason)

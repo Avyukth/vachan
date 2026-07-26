@@ -48,6 +48,22 @@ TRANSPORT_LABEL = "streaming_pcm16_ws"
 STT_TIMEOUT_SECONDS = 20.0
 PCM_CHUNK_BYTES = 3_200
 _MATRIX_TEST_NAME = re.compile(r"^test_matrix_(?P<case_id>\d{2})(?:_|$)")
+REQUIRED_MATRIX_CASE_IDS = (
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+)
 
 
 class EvidenceTier(StrEnum):
@@ -175,6 +191,7 @@ def _matrix_collection_contract_failure(
     results: Sequence[CaseResult],
     exit_code: pytest.ExitCode,
     expected_case_ids: Sequence[str],
+    required_case_ids: Sequence[str] = REQUIRED_MATRIX_CASE_IDS,
 ) -> CaseResult | None:
     """Describe collection drift without hiding the cases that did execute."""
 
@@ -182,22 +199,31 @@ def _matrix_collection_contract_failure(
     counts = Counter(collected)
     expected = tuple(expected_case_ids)
     expected_counts = Counter(expected)
+    required = tuple(required_case_ids)
     missing = tuple(
         case_id
         for case_id, expected_count in expected_counts.items()
         if counts[case_id] < expected_count
     )
+    required_missing = tuple(case_id for case_id in required if not expected_counts[case_id])
     extra = tuple(sorted(case_id for case_id in counts if case_id not in expected_counts))
     duplicates = tuple(sorted(case_id for case_id, count in counts.items() if count > 1))
     invalid = tuple(
         sorted(
             case_id
-            for case_id in {*expected, *collected}
+            for case_id in {*required, *expected, *collected}
             if re.fullmatch(r"\d{2}", case_id) is None
         )
     )
     collection_failed = exit_code not in {pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED}
-    if not missing and not extra and not duplicates and not invalid and not collection_failed:
+    if (
+        not missing
+        and not required_missing
+        and not extra
+        and not duplicates
+        and not invalid
+        and not collection_failed
+    ):
         return None
 
     diagnostic = json.dumps(
@@ -211,6 +237,9 @@ def _matrix_collection_contract_failure(
             "extra": extra,
             "invalid": invalid,
             "missing": missing,
+            "required": required,
+            "required_count": len(required),
+            "required_missing": required_missing,
         },
         separators=(",", ":"),
         sort_keys=True,

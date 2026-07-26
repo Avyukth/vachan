@@ -102,6 +102,54 @@ def test_matrix_collection_drift_names_missing_extra_and_duplicate_ids() -> None
     assert '"exit_code":"OK"' in failure.detail
 
 
+def test_matrix_collection_contract_rejects_only_twelve_valid_cases() -> None:
+    results = _matrix(count=12)
+
+    failure = _matrix_collection_contract_failure(
+        results,
+        pytest.ExitCode.OK,
+        tuple(result.case_id for result in results),
+    )
+
+    assert failure is not None
+    assert '"collected_count":12' in failure.detail
+    assert '"required_missing":["13","14"]' in failure.detail
+    assert "matrix-case" not in failure.detail
+
+
+def test_matrix_collection_contract_rejects_a_deleted_required_case() -> None:
+    results = tuple(result for result in _matrix() if result.case_id != "07")
+
+    failure = _matrix_collection_contract_failure(
+        results,
+        pytest.ExitCode.OK,
+        tuple(result.case_id for result in results),
+    )
+
+    assert failure is not None
+    assert '"required_missing":["07"]' in failure.detail
+
+
+def test_matrix_collection_contract_allows_and_counts_new_cases() -> None:
+    results = _matrix(count=16)
+
+    failure = _matrix_collection_contract_failure(
+        results,
+        pytest.ExitCode.OK,
+        tuple(result.case_id for result in results),
+    )
+
+    assert failure is None
+    artifact = render_artifact(
+        results,
+        (),
+        timestamp=datetime(2026, 7, 26, 15, 42, 7, tzinfo=IST),
+        build_id="abc1234",
+    )
+    assert "matrix (offline): 16/16" in artifact
+    assert artifact.endswith("score: 16/16\n")
+
+
 def test_matrix_collection_contract_rejects_failed_empty_collection() -> None:
     failure = _matrix_collection_contract_failure(
         (),

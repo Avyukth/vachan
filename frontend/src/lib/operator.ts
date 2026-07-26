@@ -23,6 +23,11 @@ export interface OperatorAlert {
 	readonly detail: string;
 }
 
+export interface OperatorActionState {
+	readonly endDisabled: boolean;
+	readonly takeoverDisabled: boolean;
+}
+
 export interface OperatorView {
 	readonly events: readonly ServerEvent[];
 	readonly callState: string;
@@ -81,7 +86,7 @@ function identityJourney(events: readonly ServerEvent[]): readonly string[] {
 	const transitions = events.filter(
 		(event) => event.type === 'state_change' && event.payload.machine === 'identity'
 	);
-	if (transitions.length === 0) return ['UNVERIFIED'];
+	if (transitions.length === 0) return [];
 
 	const journey = [payloadString(transitions[0], 'before') ?? 'UNVERIFIED'];
 	for (const transition of transitions) {
@@ -89,6 +94,26 @@ function identityJourney(events: readonly ServerEvent[]): readonly string[] {
 		if (state && state !== journey.at(-1)) journey.push(state);
 	}
 	return journey;
+}
+
+export function operatorActionState({
+	complete,
+	hasEnd,
+	hasTakeover,
+	takeoverActive,
+	endReason
+}: {
+	readonly complete: boolean;
+	readonly hasEnd: boolean;
+	readonly hasTakeover: boolean;
+	readonly takeoverActive: boolean;
+	readonly endReason: string;
+}): OperatorActionState {
+	const terminal = complete || (!hasEnd && !hasTakeover);
+	return {
+		endDisabled: terminal || !hasEnd || (takeoverActive && !endReason.trim()),
+		takeoverDisabled: terminal || !hasTakeover || takeoverActive
+	};
 }
 
 function evidenceDetail(event: ServerEvent): string {

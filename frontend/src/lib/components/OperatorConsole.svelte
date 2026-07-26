@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
 		buildOperatorView,
+		operatorActionState,
 		type OperatorConnectionState
 	} from '$lib/operator';
 	import type { ServerEvent } from '$lib/protocol';
@@ -26,13 +27,15 @@
 	}: Props = $props();
 
 	let view = $derived(buildOperatorView(events, connectionState));
-	let baseActionsDisabled = $derived(
-		view.complete || connectionState !== 'live' || (!onEnd && !onTakeover)
+	let actionState = $derived(
+		operatorActionState({
+			complete: view.complete,
+			hasEnd: Boolean(onEnd),
+			hasTakeover: Boolean(onTakeover),
+			takeoverActive,
+			endReason
+		})
 	);
-	let endDisabled = $derived(
-		baseActionsDisabled || !onEnd || (takeoverActive && !endReason.trim())
-	);
-	let takeoverDisabled = $derived(baseActionsDisabled || !onTakeover || takeoverActive);
 </script>
 
 <section class="operator-console" aria-labelledby="operator-console-heading">
@@ -83,14 +86,19 @@
 				</label>
 			{/if}
 			<div class="call-actions" aria-label="Operator call actions">
-				<button type="button" class="secondary-action" onclick={onEnd} disabled={endDisabled}>
+				<button
+					type="button"
+					class="secondary-action"
+					onclick={onEnd}
+					disabled={actionState.endDisabled}
+				>
 					End call
 				</button>
 				<button
 					type="button"
 					class="takeover-action"
 					onclick={onTakeover}
-					disabled={takeoverDisabled}
+					disabled={actionState.takeoverDisabled}
 				>
 					Break-glass takeover
 				</button>
@@ -109,15 +117,19 @@
 				aria-live="polite"
 				aria-atomic="true"
 			>
-				{#each view.identityJourney as state, index (index)}
-					{#if index > 0}<span class="journey-arrow" aria-hidden="true">→</span>{/if}
-					<strong
-						class:confirmed={state === 'CONFIRMED'}
-						class:demoted={state === 'THIRD_PARTY'}
-					>
-						{state}
-					</strong>
-				{/each}
+				{#if view.identityJourney.length === 0}
+					<strong class="unknown">NO IDENTITY EVIDENCE</strong>
+				{:else}
+					{#each view.identityJourney as state, index (index)}
+						{#if index > 0}<span class="journey-arrow" aria-hidden="true">→</span>{/if}
+						<strong
+							class:confirmed={state === 'CONFIRMED'}
+							class:demoted={state === 'THIRD_PARTY'}
+						>
+							{state}
+						</strong>
+					{/each}
+				{/if}
 			</div>
 
 			<dl>
@@ -388,6 +400,11 @@
 
 	.identity-ribbon strong.confirmed {
 		color: var(--color-held);
+	}
+
+	.identity-ribbon strong.unknown {
+		color: var(--color-muted);
+		font-size: 0.85em;
 	}
 
 	.identity-ribbon strong.demoted,

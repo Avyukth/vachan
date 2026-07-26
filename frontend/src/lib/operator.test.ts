@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { buildOperatorView } from './operator';
+import { buildOperatorView, operatorActionState } from './operator';
 import { PROTOCOL_VERSION, type EventType, type ServerEvent } from './protocol';
 
 declare const Bun: {
@@ -100,6 +100,73 @@ describe('ledger-derived operator view', () => {
 		expect(view.alert).toEqual({
 			title: 'EVENT STREAM DEGRADED',
 			detail: 'The ledger connection dropped. Do not infer call state from a frozen screen.'
+		});
+	});
+
+	test('does not invent UNVERIFIED before an identity event is persisted', () => {
+		const unknown = buildOperatorView(
+			[event(1, 'state_change', { machine: 'call', before: 'READY', after: 'ACTIVE' })],
+			'live'
+		);
+		const unverified = buildOperatorView(
+			[
+				event(1, 'state_change', {
+					machine: 'identity',
+					before: 'UNVERIFIED',
+					after: 'VERIFYING'
+				})
+			],
+			'live'
+		);
+
+		expect(unknown.identityState).toBe('—');
+		expect(unknown.identityJourney).toEqual([]);
+		expect(unverified.identityJourney).toEqual(['UNVERIFIED', 'VERIFYING']);
+		expect(operatorConsoleSource).toContain('NO IDENTITY EVIDENCE');
+	});
+
+	test('keeps emergency actions independent of evidence transport state', () => {
+		for (const connectionState of ['connecting', 'live', 'degraded'] as const) {
+			const view = buildOperatorView([], connectionState);
+			expect(
+				operatorActionState({
+					complete: view.complete,
+					hasEnd: true,
+					hasTakeover: true,
+					takeoverActive: false,
+					endReason: ''
+				})
+			).toEqual({
+				endDisabled: false,
+				takeoverDisabled: false
+			});
+		}
+	});
+
+	test('keeps lifecycle-specific emergency action preconditions', () => {
+		expect(
+			operatorActionState({
+				complete: false,
+				hasEnd: true,
+				hasTakeover: true,
+				takeoverActive: true,
+				endReason: ''
+			})
+		).toEqual({
+			endDisabled: true,
+			takeoverDisabled: true
+		});
+		expect(
+			operatorActionState({
+				complete: false,
+				hasEnd: true,
+				hasTakeover: true,
+				takeoverActive: true,
+				endReason: 'Operator completed the conversation'
+			})
+		).toEqual({
+			endDisabled: false,
+			takeoverDisabled: true
 		});
 	});
 

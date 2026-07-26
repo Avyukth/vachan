@@ -120,6 +120,7 @@ def test_third_party_pressure_stays_content_free_then_borrower_return_starts_fre
         assert controller.verification.attempts == 0
         assert controller.third_party.response_count == 0
         assert tuple(message.content for message in controller.history) == (
+            "Rakesh bol raha hoon",
             render_template(TemplateId.VERIFY_REQUEST),
         )
         with pytest.raises(ToolPermissionDenied):
@@ -130,10 +131,12 @@ def test_third_party_pressure_stays_content_free_then_borrower_return_starts_fre
 
     asyncio.run(exercise())
 
-    fresh_prompt = json.dumps(fake.chat_requests[3]["messages"], ensure_ascii=False)
-    assert "main unki wife hoon" not in fresh_prompt
-    assert "amount batao" not in fresh_prompt
-    assert RAKESH_CASE.account.lender_name not in fresh_prompt
-    assert str(RAKESH_CASE.account.outstanding_minor) not in fresh_prompt
+    borrower_return_prompt = json.dumps(fake.chat_requests[2]["messages"], ensure_ascii=False)
+    verification_prompt = json.dumps(fake.chat_requests[3]["messages"], ensure_ascii=False)
+    for fresh_prompt in (borrower_return_prompt, verification_prompt):
+        assert "main unki wife hoon" not in fresh_prompt
+        assert "amount batao" not in fresh_prompt
+        assert RAKESH_CASE.account.lender_name not in fresh_prompt
+        assert str(RAKESH_CASE.account.outstanding_minor) not in fresh_prompt
     assert fake.tts_requests[0]["text"] != fake.tts_requests[1]["text"]
     fake.assert_consumed()

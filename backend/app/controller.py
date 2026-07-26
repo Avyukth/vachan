@@ -360,6 +360,26 @@ class DialogueController:
             operation=lambda: self.callback_payloads.append(payload),
         )
 
+    async def _begin_fresh_borrower_return(self, transcript: str) -> bool:
+        """Reset the third-party epoch before constructing another model prompt."""
+
+        if self.snapshot.identity is not IdentityState.THIRD_PARTY:
+            return False
+        route = route_speaker_utterance(
+            transcript,
+            proposed_intent=PreConfirmationIntent.OTHER,
+        )
+        if route.identity_target is not IdentityState.VERIFYING:
+            return False
+        await self._coordinator.transition(
+            IdentityState.VERIFYING,
+            reason_code="borrower_returned_fresh_verification",
+        )
+        self.verification = VerificationSession()
+        self.third_party = ThirdPartySession()
+        self.history = ()
+        return True
+
     async def _handle_preconfirmed(
         self,
         transcript: str,
@@ -399,18 +419,7 @@ class DialogueController:
         if self.snapshot.identity is IdentityState.THIRD_PARTY:
             # A model label cannot unlock a shared handset. Only the deterministic
             # explicit-borrower matcher may start a fresh verification epoch.
-            route = route_speaker_utterance(
-                transcript,
-                proposed_intent=PreConfirmationIntent.OTHER,
-            )
-            if route.identity_target is IdentityState.VERIFYING:
-                await self._coordinator.transition(
-                    IdentityState.VERIFYING,
-                    reason_code="borrower_returned_fresh_verification",
-                )
-                self.verification = VerificationSession()
-                self.third_party = ThirdPartySession()
-                self.history = ()
+            if await self._begin_fresh_borrower_return(transcript):
                 return render_template(TemplateId.VERIFY_REQUEST), None
             hold = self.third_party.next_hold()
             if self.third_party.response_count == 3:
@@ -584,6 +593,7 @@ class DialogueController:
             raise ControllerClosedError("terminal call cannot process another turn")
         if not transcript.strip():
             raise ValueError("finalized transcript must not be empty")
+        await self._begin_fresh_borrower_return(transcript)
         context = build_llm_context(
             call_state=self.snapshot.call,
             identity_state=self.snapshot.identity,

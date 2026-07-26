@@ -12,9 +12,12 @@ from app.templates import TemplateId, render_template
 from app.tools import PermissionContext, ToolName, evaluate_tool_permission
 from app.verification import (
     DEMO_VERIFICATION_LABEL,
+    INCOMPLETE_VERIFICATION_INPUT_MARKER,
     MAX_VERIFICATION_ATTEMPTS,
     VERIFICATION_MODEL_PAYLOADS,
     ExpectedVerification,
+    IncompleteVerificationSubmission,
+    PendingVerificationAttempt,
     VerificationClosedError,
     VerificationSession,
     VerificationStatus,
@@ -22,6 +25,7 @@ from app.verification import (
     normalize_birth_day_month,
     normalize_reference_last4,
     submit_verification,
+    verification_input_marker,
 )
 
 EXPECTED = ExpectedVerification.from_case(RAKESH_CASE)
@@ -107,6 +111,17 @@ def test_one_wrong_then_right_stays_locked_until_attempt_two() -> None:
     assert second.session == VerificationSession(2, VerificationStatus.CONFIRMED)
     assert second.identity_state is IdentityState.CONFIRMED
     assert _account_read_allowed(second.identity_state) is True
+
+
+def test_partial_submission_is_not_a_complete_attempt() -> None:
+    partial = VerificationSubmission("चौदह सितंबर", "not provided")
+
+    assert verification_input_marker(partial) == INCOMPLETE_VERIFICATION_INPUT_MARKER
+    with pytest.raises(IncompleteVerificationSubmission):
+        submit_verification(VerificationSession(), partial, EXPECTED)
+
+    assert VerificationSession().attempts == 0
+    assert PendingVerificationAttempt().complete is False
 
 
 def test_two_wrong_attempts_fail_with_fixed_content_free_close() -> None:

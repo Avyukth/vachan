@@ -20,7 +20,10 @@ from app.seeds import RAKESH_CASE
 from app.states import IdentityState
 from app.templates import TemplateId, is_bank_member, render_template
 from app.tools import ToolPermissionDenied
-from app.verification import INCOMPLETE_VERIFICATION_INPUT_MARKER
+from app.verification import (
+    COMPLETE_VERIFICATION_INPUT_MARKER,
+    INCOMPLETE_VERIFICATION_INPUT_MARKER,
+)
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
 
@@ -185,4 +188,99 @@ def test_third_party_pressure_stays_content_free_then_borrower_return_starts_fre
         assert RAKESH_CASE.account.lender_name not in fresh_prompt
         assert str(RAKESH_CASE.account.outstanding_minor) not in fresh_prompt
     assert fake.tts_requests[0]["text"] != fake.tts_requests[1]["text"]
+    fake.assert_consumed()
+
+
+def test_confirmed_handover_demotes_before_model_prompt_and_ignores_model_miss(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "deterministic-handover",
+        ("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+        ("चौदह सितंबर, reference 4729", {"intent": "verification_response"}),
+        # The model deliberately misses the handover; code must still relock.
+        ("lo baat karo", {"intent": "other", "response_draft": "balance is private"}),
+    )
+
+    async def exercise() -> str:
+        await controller.start()
+        await controller.run_turn()
+        await controller.run_turn()
+        assert controller.snapshot.identity is IdentityState.CONFIRMED
+
+        handover = await controller.run_turn()
+
+        assert controller.snapshot.identity is IdentityState.UNVERIFIED
+        with pytest.raises(ToolPermissionDenied):
+            await controller.read_mock_account()
+        return handover.speech_text
+
+    assert asyncio.run(exercise()) == render_template(TemplateId.ASK_FOR_BORROWER)
+
+    prompt = json.dumps(fake.chat_requests[2]["messages"], ensure_ascii=False)
+    assert RAKESH_CASE.account.lender_name not in prompt
+    assert str(RAKESH_CASE.account.outstanding_minor) not in prompt
+    assert COMPLETE_VERIFICATION_INPUT_MARKER not in prompt
+    assert "धन्यवाद। पहचान की जाँच पूरी हुई।" not in prompt
+    fake.assert_consumed()
+
+
+def test_partial_verification_turns_complete_one_attempt_without_persisting_values(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    birth_value = "चौदह सितंबर"
+    reference_value = "reference 4729"
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "partial-verification",
+        ("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+        (birth_value, {"intent": "verification_response"}),
+        (reference_value, {"intent": "verification_response"}),
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        await controller.run_turn()
+
+        partial = await controller.run_turn()
+        assert partial.disposition is None
+        assert controller.snapshot.identity is IdentityState.VERIFYING
+        assert controller.verification.attempts == 0
+
+        complete = await controller.run_turn()
+        assert complete.disposition is None
+        assert controller.snapshot.identity is IdentityState.CONFIRMED
+        assert controller.verification.attempts == 1
+
+    asyncio.run(exercise())
+
+    attempt_rows = tuple(
+        db_connection.execute(
+            """
+            SELECT redacted_reason
+            FROM events
+            WHERE call_id = ? AND type = 'VERIFICATION_ATTEMPT'
+            ORDER BY seq
+            """,
+            (controller.call_id,),
+        )
+    )
+    assert len(attempt_rows) == 1
+    serialized_evidence = repr(attempt_rows)
+    assert birth_value not in serialized_evidence
+    assert reference_value not in serialized_evidence
+    assert all(
+        private_value not in json.dumps(request, ensure_ascii=False)
+        for request in fake.chat_requests
+        for private_value in (birth_value, reference_value)
+    )
+    assert [request["messages"][-1]["content"] for request in fake.chat_requests[1:]] == [
+        INCOMPLETE_VERIFICATION_INPUT_MARKER,
+        INCOMPLETE_VERIFICATION_INPUT_MARKER,
+    ]
     fake.assert_consumed()

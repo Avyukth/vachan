@@ -56,6 +56,10 @@ class VerificationClosedError(RuntimeError):
     """A caller attempted verification after success or terminal failure."""
 
 
+class IncompleteVerificationSubmission(ValueError):
+    """A caller submission did not contain both verification fields."""
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class ExpectedVerification:
     """Backend-only expected values loaded from one seeded case."""
@@ -199,6 +203,25 @@ class VerificationSession:
             raise ValueError("pending verification cannot exhaust the attempt limit")
         if self.status is VerificationStatus.FAILED and self.attempts != MAX_VERIFICATION_ATTEMPTS:
             raise ValueError("failed verification must exhaust the attempt limit")
+
+
+@dataclass(frozen=True, slots=True)
+class PendingVerificationAttempt:
+    """Value-free field results collected before one complete attempt."""
+
+    birth_day_month_passed: bool | None = None
+    reference_last4_passed: bool | None = None
+
+    def __post_init__(self) -> None:
+        for result in (self.birth_day_month_passed, self.reference_last4_passed):
+            if result is not None and not isinstance(result, bool):
+                raise TypeError("pending verification results must be booleans or None")
+
+    @property
+    def complete(self) -> bool:
+        """Return whether both fields have been supplied and compared."""
+
+        return self.birth_day_month_passed is not None and self.reference_last4_passed is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +481,13 @@ def _normalized_expected_reference(expected: ExpectedVerification) -> str:
     return normalized
 
 
+def _ensure_verification_open(session: VerificationSession) -> None:
+    if session.status is not VerificationStatus.PENDING:
+        raise VerificationClosedError("verification challenge is already closed")
+    if session.attempts >= MAX_VERIFICATION_ATTEMPTS:
+        raise VerificationClosedError("verification attempt limit is exhausted")
+
+
 def verification_input_marker(submission: VerificationSubmission) -> str:
     """Return a value-free model/history marker for one caller submission."""
 
@@ -468,25 +498,50 @@ def verification_input_marker(submission: VerificationSubmission) -> str:
     return COMPLETE_VERIFICATION_INPUT_MARKER if complete else INCOMPLETE_VERIFICATION_INPUT_MARKER
 
 
-def submit_verification(
+def collect_verification_attempt(
     session: VerificationSession,
+    pending: PendingVerificationAttempt,
     submission: VerificationSubmission,
     expected: ExpectedVerification,
-) -> VerificationResult:
-    """Compare one complete attempt locally and return a redacted outcome."""
+) -> PendingVerificationAttempt | VerificationResult:
+    """Collect value-free checks and finalize only after both fields arrive."""
 
-    if session.status is not VerificationStatus.PENDING:
-        raise VerificationClosedError("verification challenge is already closed")
-    if session.attempts >= MAX_VERIFICATION_ATTEMPTS:
-        raise VerificationClosedError("verification attempt limit is exhausted")
-
-    birth_passed = normalize_birth_day_month(submission.birth_day_month) == (
-        expected.birth_day,
-        expected.birth_month,
+    _ensure_verification_open(session)
+    normalized_birth = normalize_birth_day_month(submission.birth_day_month)
+    normalized_reference = normalize_reference_last4(submission.reference_last4)
+    collected = PendingVerificationAttempt(
+        birth_day_month_passed=(
+            pending.birth_day_month_passed
+            if normalized_birth is None
+            else normalized_birth == (expected.birth_day, expected.birth_month)
+        ),
+        reference_last4_passed=(
+            pending.reference_last4_passed
+            if normalized_reference is None
+            else normalized_reference == _normalized_expected_reference(expected)
+        ),
     )
-    reference_passed = normalize_reference_last4(
-        submission.reference_last4
-    ) == _normalized_expected_reference(expected)
+    if not collected.complete:
+        return collected
+
+    assert collected.birth_day_month_passed is not None
+    assert collected.reference_last4_passed is not None
+    return _complete_verification_attempt(
+        session,
+        birth_passed=collected.birth_day_month_passed,
+        reference_passed=collected.reference_last4_passed,
+    )
+
+
+def _complete_verification_attempt(
+    session: VerificationSession,
+    *,
+    birth_passed: bool,
+    reference_passed: bool,
+) -> VerificationResult:
+    """Build one complete attempt from value-free comparison results."""
+
+    _ensure_verification_open(session)
     attempt = session.attempts + 1
     passed = birth_passed and reference_passed
     evidence = VerificationAttemptEvidence(
@@ -519,3 +574,23 @@ def submit_verification(
         identity_state=IdentityState.VERIFYING,
         evidence=evidence,
     )
+
+
+def submit_verification(
+    session: VerificationSession,
+    submission: VerificationSubmission,
+    expected: ExpectedVerification,
+) -> VerificationResult:
+    """Compare one complete attempt locally and return a redacted outcome."""
+
+    result = collect_verification_attempt(
+        session,
+        PendingVerificationAttempt(),
+        submission,
+        expected,
+    )
+    if isinstance(result, PendingVerificationAttempt):
+        raise IncompleteVerificationSubmission(
+            "verification attempt requires both supported fields"
+        )
+    return result

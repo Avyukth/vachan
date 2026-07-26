@@ -28,6 +28,7 @@ from app.contracts import Disposition, LedgerEventType, StateSnapshot
 from app.db import EvidenceLedger, TerminalDispositionConflict
 from app.gated_tools import GatedToolExecutor, ToolFacts
 from app.guard import OutputBlockedEvent, OutputGuardContext, classify_block, guard_for_tts
+from app.handover import HandoverBoundary, HandoverOutcome
 from app.promise import (
     AmbiguousDateError,
     InvalidAmountError,
@@ -54,10 +55,11 @@ from app.third_party import (
 from app.tools import ToolDecision, ToolName, ToolPermissionDenied
 from app.verification import (
     ExpectedVerification,
+    PendingVerificationAttempt,
     VerificationSession,
     VerificationStatus,
     VerificationSubmission,
-    submit_verification,
+    collect_verification_attempt,
     verification_input_marker,
 )
 from app.verification_evidence import VerificationEvidenceRepository
@@ -199,6 +201,7 @@ class DialogueController:
         self.disposition: Disposition | None = None
         self._verification_evidence = VerificationEvidenceRepository(ledger)
         self.verification = self._verification_evidence.reconstruct_session(call_id)
+        self._pending_verification = PendingVerificationAttempt()
         self.third_party = ThirdPartySession()
         self.callback_payloads: list[dict[str, str]] = []
         self.history: tuple[PromptMessage, ...] = ()
@@ -214,6 +217,10 @@ class DialogueController:
             authorization_state=self._coordinator,
             decision_writer=ledger,
             clock=clock,
+        )
+        self._handover = HandoverBoundary(
+            state=self._coordinator,
+            case=case,
         )
         self._promise = PromiseEngine(
             call_id=call_id,
@@ -509,8 +516,9 @@ class DialogueController:
         result = await self._tools.execute(
             ToolName.SUBMIT_VERIFICATION,
             facts=ToolFacts(verification_attempts=self.verification.attempts),
-            operation=lambda: submit_verification(
+            operation=lambda: collect_verification_attempt(
                 self.verification,
+                self._pending_verification,
                 VerificationSubmission(
                     birth_day_month=transcript,
                     reference_last4=transcript,
@@ -518,6 +526,9 @@ class DialogueController:
                 ExpectedVerification.from_case(self.case),
             ),
         )
+        if isinstance(result, PendingVerificationAttempt):
+            self._pending_verification = result
+            return render_template(TemplateId.VERIFY_REQUEST), None
         snapshot = self.snapshot
         await self._verification_evidence.append_attempt(
             call_id=self.call_id,
@@ -525,6 +536,7 @@ class DialogueController:
             state=snapshot,
             evidence=result.evidence,
         )
+        self._pending_verification = PendingVerificationAttempt()
         self.verification = result.session
         if result.identity_state is IdentityState.CONFIRMED:
             await self._coordinator.transition(
@@ -566,6 +578,7 @@ class DialogueController:
             reason_code="borrower_returned_fresh_verification",
         )
         self.verification = VerificationSession()
+        self._pending_verification = PendingVerificationAttempt()
         self.third_party = ThirdPartySession()
         self.history = ()
         return True
@@ -599,6 +612,7 @@ class DialogueController:
                     IdentityState.THIRD_PARTY,
                     reason_code=route.reason_code,
                 )
+                self._pending_verification = PendingVerificationAttempt()
                 return render_template(route.template_id), None
             if route.identity_target is IdentityState.VERIFYING:
                 return render_template(route.template_id), None
@@ -888,6 +902,14 @@ class DialogueController:
             raise ControllerClosedError("terminal call cannot process another turn")
         if not transcript.strip():
             raise ValueError("finalized transcript must not be empty")
+        handover: HandoverOutcome | None = None
+        if self.snapshot.identity is IdentityState.CONFIRMED:
+            handover = await self._handover.handle_turn(transcript)
+            if handover is not None:
+                self.verification = VerificationSession()
+                self._pending_verification = PendingVerificationAttempt()
+                self.third_party = ThirdPartySession()
+                self.history = ()
         await self._begin_fresh_borrower_return(transcript)
         model_utterance = transcript
         if self.snapshot.identity is IdentityState.VERIFYING:
@@ -909,7 +931,9 @@ class DialogueController:
         payload = _action_payload(chat)
         self.history = (*self.history, PromptMessage(PromptRole.USER, model_utterance))
 
-        if self.snapshot.identity is IdentityState.CONFIRMED:
+        if handover is not None:
+            draft, disposition = handover.response_text, None
+        elif self.snapshot.identity is IdentityState.CONFIRMED:
             draft, disposition = await self._handle_confirmed(transcript, payload)
         else:
             draft, disposition = await self._handle_preconfirmed(transcript, payload)

@@ -16,7 +16,7 @@ HANDOVER_CALL_STATES = frozenset({"ACTIVE", "DEGRADED"})
 
 
 class Intent(StrEnum):
-    """The only intents the language model may propose."""
+    """Post-confirmation intents the language model may propose."""
 
     OFFER_PROMISE = "offer_promise"
     CORRECT_PROMISE = "correct_promise"
@@ -30,6 +30,46 @@ class Intent(StrEnum):
 CONFIRMED_ONLY_INTENTS = frozenset({Intent.OFFER_PROMISE, Intent.CORRECT_PROMISE, Intent.CONFIRM})
 
 
+class PreConfirmationIntent(StrEnum):
+    """Classification-only intents available before identity confirmation."""
+
+    SCAM_CONCERN = "scam_concern"
+    IDENTITY_QUERY = "identity_query"
+    BORROWER_PRESENT = "borrower_present"
+    VERIFICATION_RESPONSE = "verification_response"
+    THIRD_PARTY = "third_party"
+    CLARIFICATION = "clarification"
+    REQUEST_HUMAN = "request_human"
+    HANDOVER = "handover"
+    TECHNICAL = "technical"
+    OTHER = "other"
+
+
+class PreConfirmationTemplate(StrEnum):
+    """Reviewed template identifiers; model-authored prose is never represented here."""
+
+    INTRO_ANTISCAM = "INTRO_ANTISCAM"
+    ASK_FOR_BORROWER = "ASK_FOR_BORROWER"
+    VERIFY_REQUEST = "VERIFY_REQUEST"
+    CLARIFY = "CLARIFY"
+    THIRD_PARTY_CALLBACK = "THIRD_PARTY_CALLBACK"
+    TECH_DIFFICULTY_CLOSE = "TECH_DIFFICULTY_CLOSE"
+
+
+PRECONFIRMATION_ROUTES: dict[PreConfirmationIntent, PreConfirmationTemplate] = {
+    PreConfirmationIntent.SCAM_CONCERN: PreConfirmationTemplate.INTRO_ANTISCAM,
+    PreConfirmationIntent.IDENTITY_QUERY: PreConfirmationTemplate.INTRO_ANTISCAM,
+    PreConfirmationIntent.BORROWER_PRESENT: PreConfirmationTemplate.ASK_FOR_BORROWER,
+    PreConfirmationIntent.VERIFICATION_RESPONSE: PreConfirmationTemplate.VERIFY_REQUEST,
+    PreConfirmationIntent.THIRD_PARTY: PreConfirmationTemplate.THIRD_PARTY_CALLBACK,
+    PreConfirmationIntent.CLARIFICATION: PreConfirmationTemplate.CLARIFY,
+    PreConfirmationIntent.REQUEST_HUMAN: PreConfirmationTemplate.CLARIFY,
+    PreConfirmationIntent.HANDOVER: PreConfirmationTemplate.ASK_FOR_BORROWER,
+    PreConfirmationIntent.TECHNICAL: PreConfirmationTemplate.TECH_DIFFICULTY_CLOSE,
+    PreConfirmationIntent.OTHER: PreConfirmationTemplate.CLARIFY,
+}
+
+
 class LLMAction(BaseModel):
     """A language-model proposal; never an authorization or database command."""
 
@@ -39,6 +79,24 @@ class LLMAction(BaseModel):
     amount_minor: StrictInt | None = None
     date_phrase: str | None = None
     response_draft: str = ""
+
+
+class PreConfirmationClassification(BaseModel):
+    """A pre-confirmation classifier result with no channel for private fields or prose."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    intent: PreConfirmationIntent
+
+
+class PreConfirmationValidationResult(BaseModel):
+    """A deterministic route from typed classification to reviewed template ID."""
+
+    model_config = ConfigDict(frozen=True)
+
+    classification: PreConfirmationClassification
+    template: PreConfirmationTemplate
+    accepted: bool
 
 
 class ActionValidationResult(BaseModel):
@@ -75,6 +133,37 @@ def _parse_action(raw_action: str | bytes | Mapping[str, Any] | LLMAction) -> LL
     if not isinstance(payload, dict):
         raise ValueError("LLM action payload must be a JSON object")
     return LLMAction.model_validate(payload)
+
+
+def validate_preconfirmation_classification(
+    raw_classification: str | bytes | Mapping[str, Any] | PreConfirmationClassification,
+) -> PreConfirmationValidationResult:
+    """Route untrusted pre-confirmation classifier output to reviewed template IDs only."""
+    try:
+        if isinstance(raw_classification, PreConfirmationClassification):
+            classification = raw_classification
+        else:
+            payload = (
+                json.loads(raw_classification)
+                if isinstance(raw_classification, str | bytes)
+                else dict(raw_classification)
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("pre-confirmation classification must be a JSON object")
+            classification = PreConfirmationClassification.model_validate(payload)
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
+        classification = PreConfirmationClassification(intent=PreConfirmationIntent.OTHER)
+        return PreConfirmationValidationResult(
+            classification=classification,
+            template=PreConfirmationTemplate.CLARIFY,
+            accepted=False,
+        )
+
+    return PreConfirmationValidationResult(
+        classification=classification,
+        template=PRECONFIRMATION_ROUTES[classification.intent],
+        accepted=True,
+    )
 
 
 def validate_llm_action(

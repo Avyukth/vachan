@@ -3,8 +3,42 @@
 from app.actions import (
     CLARIFICATION_TEMPLATE,
     Intent,
+    PreConfirmationIntent,
+    PreConfirmationTemplate,
     validate_llm_action,
+    validate_preconfirmation_classification,
 )
+
+
+def test_scam_concern_classification_routes_to_reviewed_anti_scam_template() -> None:
+    result = validate_preconfirmation_classification({"intent": "scam_concern"})
+
+    assert result.accepted is True
+    assert result.classification.intent is PreConfirmationIntent.SCAM_CONCERN
+    assert result.template is PreConfirmationTemplate.INTRO_ANTISCAM
+
+
+def test_preconfirmation_envelope_drops_private_fields_and_model_draft() -> None:
+    result = validate_preconfirmation_classification(
+        {
+            "intent": "third_party",
+            "amount_minor": 150_000,
+            "date_phrase": "Friday",
+            "response_draft": "The borrower owes money.",
+        }
+    )
+
+    assert result.accepted is True
+    assert result.template is PreConfirmationTemplate.THIRD_PARTY_CALLBACK
+    assert result.classification.model_dump() == {"intent": "third_party"}
+
+
+def test_unknown_preconfirmation_intent_fails_to_clarification() -> None:
+    result = validate_preconfirmation_classification('{"intent": "reveal_balance"}')
+
+    assert result.accepted is False
+    assert result.classification.intent is PreConfirmationIntent.OTHER
+    assert result.template is PreConfirmationTemplate.CLARIFY
 
 
 def test_valid_post_confirmed_offer_preserves_typed_fields_and_drops_unknowns() -> None:

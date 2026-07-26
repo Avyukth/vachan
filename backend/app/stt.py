@@ -91,6 +91,37 @@ StreamFactory = Callable[
     [str],
     AbstractAsyncContextManager[SarvamStreamingSocket],
 ]
+_ABANDONED_CONNECT_REAPERS: set[asyncio.Task[None]] = set()
+
+
+async def _reap_abandoned_connect(
+    connect_task: asyncio.Task[SarvamStreamingSocket],
+    stream_context: AbstractAsyncContextManager[SarvamStreamingSocket],
+) -> None:
+    """Close a stream that arrives after its handler stopped consuming results."""
+    try:
+        await connect_task
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        return
+    try:
+        await stream_context.__aexit__(None, None, None)
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        return
+
+
+def _abandon_connect(
+    connect_task: asyncio.Task[SarvamStreamingSocket],
+    stream_context: AbstractAsyncContextManager[SarvamStreamingSocket],
+) -> None:
+    """Cancel connection work without making the request handler await it."""
+    connect_task.cancel()
+    reaper = asyncio.create_task(_reap_abandoned_connect(connect_task, stream_context))
+    _ABANDONED_CONNECT_REAPERS.add(reaper)
+    reaper.add_done_callback(_ABANDONED_CONNECT_REAPERS.discard)
 
 
 def _final_transcript(message: Any) -> str | None:
@@ -715,17 +746,27 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
         "stt_request_timeout_seconds",
         STT_REQUEST_TIMEOUT_SECONDS,
     )
+    stream_context: AbstractAsyncContextManager[SarvamStreamingSocket] | None = None
+    connect_task: asyncio.Task[SarvamStreamingSocket] | None = None
+    connect_claimed = False
+    connect_abandoned = False
     try:
+        stream_context = stream_factory(api_key)
+        connect_task = asyncio.create_task(stream_context.__aenter__())
+        completed, _ = await asyncio.wait({connect_task}, timeout=timeout_seconds)
+        if connect_task not in completed:
+            _abandon_connect(connect_task, stream_context)
+            connect_abandoned = True
+            await asyncio.sleep(0)
+            if binding.is_call_active():
+                await binding.on_degraded(call_id, "stt_connect_timeout")
+            with suppress(RuntimeError):
+                await websocket.close(code=1011)
+            return
+        stream = connect_task.result()
+        connect_claimed = True
         async with AsyncExitStack() as stack:
-            try:
-                async with asyncio.timeout(timeout_seconds):
-                    stream = await stack.enter_async_context(stream_factory(api_key))
-            except TimeoutError:
-                if binding.is_call_active():
-                    await binding.on_degraded(call_id, "stt_connect_timeout")
-                with suppress(RuntimeError):
-                    await websocket.close(code=1011)
-                return
+            stack.push_async_exit(stream_context)
             if not binding.is_call_active():
                 return
             session = StreamingSttSession(
@@ -739,6 +780,10 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
                 return
             if not session.active or not binding.is_call_active():
                 return
+            # ASGI acceptance is the ready frame's linearization point. A frame
+            # accepted before revocation cannot be retracted, so registry
+            # ownership remains held through this await to suppress every
+            # controller callback if takeover wins before the send completes.
             await websocket.send_json(
                 VoiceReadyFrame(
                     call_id=call_id,
@@ -762,6 +807,13 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
         except RuntimeError:
             return
     finally:
+        if (
+            connect_task is not None
+            and stream_context is not None
+            and not connect_claimed
+            and not connect_abandoned
+        ):
+            _abandon_connect(connect_task, stream_context)
         registry.discard_connect(call_id, handler_task)
         if session is not None:
             session.cancel()

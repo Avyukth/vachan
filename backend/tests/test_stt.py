@@ -197,6 +197,7 @@ class DirectWebSocket:
     sent: list[dict[str, object]] = field(default_factory=list)
     closed_code: int | None = None
     hang_send: bool = False
+    append_before_hang: bool = False
     send_started: asyncio.Event = field(default_factory=asyncio.Event)
     send_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -205,12 +206,16 @@ class DirectWebSocket:
 
     async def send_json(self, payload: dict[str, object]) -> None:
         if self.hang_send:
+            if self.append_before_hang:
+                self.sent.append(payload)
             self.send_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 self.send_cancelled.set()
                 raise
+            if self.append_before_hang:
+                return
         self.sent.append(payload)
 
     async def close(self, code: int) -> None:
@@ -730,6 +735,37 @@ def test_takeover_cancels_handler_during_ready_send_before_connected_callback() 
     asyncio.run(exercise())
 
 
+def test_takeover_after_ready_linearization_suppresses_connected_callback() -> None:
+    async def exercise() -> None:
+        binding = ConnectRecordingBinding()
+
+        @asynccontextmanager
+        async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+            yield FakeStream()
+
+        app = FastAPI()
+        app.state.sarvam_api_key = "backend-only-key"
+        app.state.sarvam_stream_factory = stream_factory
+        app.state.stt_call_binding_factory = lambda call_id: binding
+        app.state.stt_sessions = SttSessionRegistry()
+        websocket = DirectWebSocket(app, hang_send=True, append_before_hang=True)
+
+        handler = asyncio.create_task(stt_websocket(websocket, "call-stt-001"))
+        await websocket.send_started.wait()
+        assert [frame["type"] for frame in websocket.sent] == ["ready"]
+
+        binding.active_call.value = False
+        assert app.state.stt_sessions.cancel_call("call-stt-001")
+        await handler
+
+        assert websocket.send_cancelled.is_set()
+        assert [frame["type"] for frame in websocket.sent] == ["ready"]
+        assert binding.connected_count == 0
+        assert binding.degradations == []
+
+    asyncio.run(exercise())
+
+
 def test_hanging_stream_connect_has_bounded_technical_failure() -> None:
     async def exercise() -> None:
         binding = ConnectRecordingBinding()
@@ -760,6 +796,49 @@ def test_hanging_stream_connect_has_bounded_technical_failure() -> None:
         assert binding.connected_count == 0
         assert binding.degradations == [("call-stt-001", "stt_connect_timeout")]
         assert not app.state.stt_sessions.cancel_call("call-stt-001")
+
+    asyncio.run(exercise())
+
+
+def test_connect_timeout_drops_cancellation_hostile_late_stream() -> None:
+    async def exercise() -> None:
+        binding = ConnectRecordingBinding()
+        cancellation_observed = asyncio.Event()
+        context_closed = asyncio.Event()
+
+        @asynccontextmanager
+        async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+            assert api_key == "backend-only-key"
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellation_observed.set()
+                await asyncio.sleep(0.015)
+            try:
+                yield FakeStream()
+            finally:
+                context_closed.set()
+
+        app = FastAPI()
+        app.state.sarvam_api_key = "backend-only-key"
+        app.state.sarvam_stream_factory = stream_factory
+        app.state.stt_call_binding_factory = lambda call_id: binding
+        app.state.stt_sessions = SttSessionRegistry()
+        app.state.stt_request_timeout_seconds = 0.005
+        websocket = DirectWebSocket(app)
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+
+        await stt_websocket(websocket, "call-stt-001")
+        elapsed = loop.time() - started_at
+
+        assert elapsed < 0.015
+        assert cancellation_observed.is_set()
+        assert websocket.sent == []
+        assert websocket.closed_code == 1011
+        assert binding.connected_count == 0
+        assert binding.degradations == [("call-stt-001", "stt_connect_timeout")]
+        await asyncio.wait_for(context_closed.wait(), timeout=0.05)
 
     asyncio.run(exercise())
 

@@ -146,6 +146,66 @@ def test_executor_that_skips_effect_cannot_mutate_promise_boundary(
     )
 
 
+def test_candidate_persistence_failure_rolls_back_controller_state_and_evidence(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    controller = _controller(
+        db_connection,
+        frozen_demo_clock,
+        name="candidate-persistence-failure",
+    )
+
+    async def exercise() -> None:
+        await _confirm_identity(controller)
+        db_connection.execute(
+            """
+            CREATE TRIGGER reject_controller_candidate_write
+            BEFORE INSERT ON promise_candidates
+            BEGIN
+                SELECT RAISE(ABORT, 'injected controller persistence failure');
+            END
+            """
+        )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="injected controller persistence failure",
+        ):
+            await controller._prepare_promise(  # noqa: SLF001
+                "pandrah sau Friday",
+                150_000,
+                "Friday",
+            )
+
+    asyncio.run(exercise())
+
+    assert controller.snapshot.promise is PromiseState.NONE
+    assert (
+        db_connection.execute(
+            "SELECT COUNT(*) FROM promise_candidates WHERE call_id = ?",
+            (controller.call_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        db_connection.execute(
+            "SELECT COUNT(*) FROM events WHERE call_id = ? AND type = ?",
+            (controller.call_id, LedgerEventType.PROMISE_CANDIDATE_CREATED.value),
+        ).fetchone()[0]
+        == 0
+    )
+    decisions = db_connection.execute(
+        """
+        SELECT allowed
+        FROM tool_decisions
+        WHERE call_id = ? AND tool = ?
+        ORDER BY seq
+        """,
+        (controller.call_id, ToolName.CREATE_PROMISE_CANDIDATE.value),
+    ).fetchall()
+    assert [row["allowed"] for row in decisions] == [1]
+
+
 class _DemotingDecisionWriter:
     """Demote identity after the first allowed decision is durable."""
 

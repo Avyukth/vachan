@@ -45,7 +45,25 @@ export interface SimulatedCallerSession {
 	cancel(): Promise<void>;
 }
 
-export type SimulatedCallerEventHandler = (message: unknown) => void;
+export interface SimulatedCallerCallbacks {
+	onServerEvent(message: unknown): void;
+	onFirstFrame(): void;
+	onLocalError(message: string): void;
+}
+
+export type SimulatedCallerSocketDecode =
+	| { readonly serverEvent: unknown; readonly localError?: never }
+	| { readonly serverEvent?: never; readonly localError: string };
+
+export function decodeSimulatedCallerSocketMessage(data: string): SimulatedCallerSocketDecode {
+	try {
+		return { serverEvent: JSON.parse(data) };
+	} catch {
+		return {
+			localError: 'The simulated-caller socket returned an unparseable server frame.'
+		};
+	}
+}
 
 /**
  * Borrower- and spouse-side fixtures only. Served by the backend fixture route (or a
@@ -155,7 +173,7 @@ export async function loadFixturePcm16(url: string): Promise<Int16Array> {
 export async function startSimulatedCaller(
 	callId: string,
 	fixtureUrl: string,
-	onEvent: SimulatedCallerEventHandler
+	callbacks: SimulatedCallerCallbacks
 ): Promise<SimulatedCallerSession> {
 	const pcm = await loadFixturePcm16(fixtureUrl);
 
@@ -174,11 +192,9 @@ export async function startSimulatedCaller(
 	});
 
 	socket.addEventListener('message', (event) => {
-		try {
-			onEvent(JSON.parse(String(event.data)));
-		} catch {
-			onEvent({ type: 'transport_error', reason: 'unparseable frame' });
-		}
+		const decoded = decodeSimulatedCallerSocketMessage(String(event.data));
+		if (decoded.localError) callbacks.onLocalError(decoded.localError);
+		else callbacks.onServerEvent(decoded.serverEvent);
 	});
 
 	let cancelled = false;
@@ -192,6 +208,7 @@ export async function startSimulatedCaller(
 				// SharedArrayBuffer, which WebSocket.send does not accept.
 				const frame = new Uint8Array(slice.byteLength);
 				frame.set(new Uint8Array(pcm.buffer, slice.byteOffset, slice.byteLength));
+				if (offset === 0) callbacks.onFirstFrame();
 				socket.send(frame.buffer);
 				await new Promise((resolve) => setTimeout(resolve, FRAME_INTERVAL_MS));
 			}
@@ -199,10 +216,9 @@ export async function startSimulatedCaller(
 				socket.send(JSON.stringify({ type: 'flush' }));
 			}
 		} catch (error: unknown) {
-			onEvent({
-				type: 'transport_error',
-				reason: error instanceof Error ? error.message : 'simulated caller failed'
-			});
+			callbacks.onLocalError(
+				error instanceof Error ? error.message : 'The simulated caller failed locally.'
+			);
 		}
 	})();
 

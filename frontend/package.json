@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
+		"check:sim-caller-build": "bun run build && bun scripts/check-simulated-caller-build.ts absent && VITE_VACHAN_SIMULATED_CALLER=1 bun run build && bun scripts/check-simulated-caller-build.ts enabled",
 		"preview": "vite preview",
 		"test:e2e": "playwright test",
 		"prepare": "svelte-kit sync || echo ''",

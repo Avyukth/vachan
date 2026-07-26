@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { CALLER_FIXTURES, assertCallerFixture, floatToPcm16 } from './simCaller';
+import {
+	CALLER_FIXTURES,
+	assertCallerFixture,
+	decodeSimulatedCallerSocketMessage,
+	floatToPcm16
+} from './simCaller';
 import { SIM_CALLER_ENV, SIM_CALLER_LABEL, simulatedCallerEnabled } from './simCallerGate';
 
 /** Returns the thrown message, or null when nothing was thrown. */
@@ -74,5 +79,21 @@ describe('floatToPcm16', () => {
 
 	test('preserves sample count so utterance duration is unchanged', () => {
 		expect(floatToPcm16(new Float32Array(1600)).length).toBe(1600);
+	});
+});
+
+describe('local socket diagnostics', () => {
+	test('malformed data remains a local error instead of forging a server frame', () => {
+		const decoded = decodeSimulatedCallerSocketMessage('{not-json');
+		expect(decoded.localError).toContain('unparseable');
+		expect(decoded.serverEvent).toBe(undefined);
+		expect(JSON.stringify(decoded).includes('transport_error')).toBe(false);
+	});
+
+	test('valid server JSON is forwarded unchanged for yy6 validation', () => {
+		const frame = { api_version: 'v0', type: 'ready', call_id: 'call-1' };
+		const decoded = decodeSimulatedCallerSocketMessage(JSON.stringify(frame));
+		expect(decoded.serverEvent).toEqual(frame);
+		expect(decoded.localError).toBe(undefined);
 	});
 });

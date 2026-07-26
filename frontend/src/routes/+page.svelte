@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, type Component } from 'svelte';
 
 	import { AgentAudioPlayback, fetchAudioCheck } from '$lib/audio';
 	import { decodeBase64Audio, parseLiveVoiceFrame } from '$lib/audio/live';
@@ -7,12 +7,6 @@
 		startCallPcm16Capture,
 		type PcmCaptureSession
 	} from '$lib/audio/pcm16';
-	import {
-		CALLER_FIXTURES,
-		startSimulatedCaller,
-		type SimulatedCallerSession
-	} from '$lib/audio/simCaller';
-	import { SIM_CALLER_LABEL, simulatedCallerEnabled } from '$lib/audio/simCallerGate';
 	import OperatorConsole from '$lib/components/OperatorConsole.svelte';
 	import {
 		connectLiveEvidence,
@@ -39,6 +33,14 @@
 		| 'blocked';
 	type ReplayState = 'idle' | 'connecting' | 'playing' | 'complete' | 'error';
 	type ResetState = 'idle' | 'confirming' | 'running' | 'success' | 'error';
+	type SimulatedCallerControlProps = {
+		activeCallId: string;
+		stopLiveCapture(): Promise<void>;
+		onVoiceMessage(message: unknown): void;
+	};
+	type SimulatedCallerControlInstance = {
+		stopForControl(reason: 'takeover_requested' | 'end_requested'): Promise<void>;
+	};
 
 	const RESET_CONFIRMATION = 'RESET DEMO / MOCK DATA';
 	const ACTIVE_CALL_STORAGE_KEY = 'vachan.activeCallId';
@@ -75,6 +77,10 @@
 	let evidenceSubscriptionGeneration = 0;
 	let audioCheckAbort: AbortController | undefined;
 	let liveCapture: PcmCaptureSession | undefined;
+	let SimulatedCallerControl = $state<
+		Component<SimulatedCallerControlProps, SimulatedCallerControlInstance>
+	>();
+	let simulatedCallerControl = $state<SimulatedCallerControlInstance>();
 	const agentAudio = new AgentAudioPlayback();
 
 	const stateLabels: Record<MicrophoneState, string> = {
@@ -273,56 +279,6 @@
 		if (capture) await capture.close();
 	}
 
-	// --- simulated-caller mode (break-glass fallback; absent unless explicitly enabled) ---
-	// Substitutes the borrower's microphone with a prerecorded, STT-verified WAV over the
-	// SAME call socket. Live mic must be stopped first: the backend cancels the prior STT
-	// session per call id, so two sockets fight silently (observed: turns run, identity
-	// never advances). Agent clips are refused inside the module — faking Vachan's own
-	// voice is a worse lie than substituting the caller.
-	const simCallerAvailable = simulatedCallerEnabled(
-		import.meta.env as unknown as Record<string, string | undefined>
-	);
-	let simCallerArming = $state(false);
-	let simCallerActive = $state(false);
-	let simCallerFixtureId = $state(CALLER_FIXTURES[0]?.id ?? '');
-	let simCallerDetail = $state('');
-	let simCallerSession: SimulatedCallerSession | undefined;
-
-	async function stopSimulatedCaller(): Promise<void> {
-		const session = simCallerSession;
-		simCallerSession = undefined;
-		simCallerActive = false;
-		if (session) await session.cancel();
-	}
-
-	async function armSimulatedCaller(): Promise<void> {
-		simCallerArming = false;
-		const fixture = CALLER_FIXTURES.find((entry) => entry.id === simCallerFixtureId);
-		if (!fixture) {
-			simCallerDetail = 'Select a caller fixture first.';
-			return;
-		}
-		if (!activeCallId) {
-			simCallerDetail = 'Start a mock call before arming the simulated caller.';
-			return;
-		}
-		try {
-			// Ordering is safety-critical: exactly one audio session may own the call.
-			await stopLiveCapture();
-			simCallerActive = true;
-			simCallerDetail = `Injecting ${fixture.label}`;
-			simCallerSession = await startSimulatedCaller(activeCallId, fixture.url, (message) => {
-				void handleLiveVoiceMessage(message);
-			});
-			await simCallerSession.done;
-			simCallerDetail = `Finished injecting ${fixture.label}. Utterance flushed.`;
-		} catch (error: unknown) {
-			simCallerActive = false;
-			simCallerDetail =
-				error instanceof Error ? error.message : 'Simulated caller could not start.';
-		}
-	}
-
 	function clearLiveSubscription(): void {
 		evidenceSubscriptionGeneration += 1;
 		stopLiveEvidence?.();
@@ -510,6 +466,7 @@
 		}
 		acceptLiveAudio = false;
 		stopAgentAudio();
+		await simulatedCallerControl?.stopForControl('end_requested');
 		await stopLiveCapture();
 		try {
 			const response = await fetch(API_ROUTES.callEnd, {
@@ -542,6 +499,7 @@
 		// output synchronously on the click; no operator-audio routing is opened.
 		acceptLiveAudio = false;
 		stopAgentAudio();
+		await simulatedCallerControl?.stopForControl('takeover_requested');
 		await stopLiveCapture();
 		try {
 			const response = await fetch(API_ROUTES.takeover, {
@@ -669,6 +627,11 @@
 
 	onMount(() => {
 		void loadCases();
+		if (import.meta.env.VITE_VACHAN_SIMULATED_CALLER === '1') {
+			void import('$lib/components/SimulatedCallerControl.svelte').then((module) => {
+				SimulatedCallerControl = module.default;
+			});
+		}
 		const restoredCallId = sessionStorage.getItem(ACTIVE_CALL_STORAGE_KEY);
 		if (restoredCallId) {
 			activeCallId = restoredCallId;
@@ -690,14 +653,6 @@
 		</div>
 		<p class="demo-badge">DEMO / MOCK DATA</p>
 	</header>
-
-	{#if simCallerActive}
-		<!-- Unmissable and unconditional: prerecorded caller audio may never be shown unlabelled. -->
-		<p class="sim-caller-banner" role="status" aria-live="assertive">
-			<strong>{SIM_CALLER_LABEL}</strong>
-			<span>Live microphone released. This caller audio is not a live speaker.</span>
-		</p>
-	{/if}
 
 	<section class="workspace" aria-labelledby="setup-heading">
 		<div class="intro-panel">
@@ -885,58 +840,13 @@
 		bind:endReason={operatorEndReason}
 	/>
 
-	{#if simCallerAvailable}
-		<section class="sim-caller" aria-labelledby="sim-caller-heading">
-			<h2 id="sim-caller-heading" class="panel-heading">Simulated caller — break-glass fallback</h2>
-			<p class="sim-caller-note">
-				Live microphone is the demo. Use this only if venue audio fails. Caller-side audio only;
-				agent clips are refused.
-			</p>
-			<label class="sim-caller-pick">
-				<span>Caller fixture</span>
-				<select bind:value={simCallerFixtureId} disabled={simCallerActive}>
-					{#each CALLER_FIXTURES as fixture (fixture.id)}
-						<option value={fixture.id}>{fixture.pathKind} · {fixture.label}</option>
-					{/each}
-				</select>
-			</label>
-
-			{#if simCallerArming}
-				<div class="sim-caller-confirm">
-					<strong>{SIM_CALLER_LABEL}</strong>
-					<p>
-						Prerecorded audio will be sent as the caller and the live microphone will be
-						released. Anyone watching must be told.
-					</p>
-					<div class="sim-caller-actions">
-						<button type="button" class="secondary-button" onclick={() => (simCallerArming = false)}>
-							Cancel
-						</button>
-						<button type="button" onclick={armSimulatedCaller}>Confirm arm</button>
-					</div>
-				</div>
-			{:else}
-				<div class="sim-caller-actions">
-					<button
-						type="button"
-						class="secondary-button"
-						disabled={!activeCallId || simCallerActive}
-						onclick={() => (simCallerArming = true)}
-					>
-						{simCallerActive ? 'Simulated caller active' : 'Arm simulated caller'}
-					</button>
-					{#if simCallerActive}
-						<button type="button" class="secondary-button" onclick={stopSimulatedCaller}>
-							Stop simulated caller
-						</button>
-					{/if}
-				</div>
-			{/if}
-
-			{#if simCallerDetail}
-				<p class="sim-caller-detail">{simCallerDetail}</p>
-			{/if}
-		</section>
+	{#if SimulatedCallerControl}
+		<SimulatedCallerControl
+			{activeCallId}
+			{stopLiveCapture}
+			onVoiceMessage={(message) => void handleLiveVoiceMessage(message)}
+			bind:this={simulatedCallerControl}
+		/>
 	{/if}
 
 	{#if import.meta.env.DEV}

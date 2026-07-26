@@ -197,10 +197,12 @@ One continuous call — judges play the callers:
 | 0:00 | Priya: preflight `READY`, Start — her first of three actions |
 | 0:10 | Judge-as-Rakesh: "scam hai kya?" → anti-scam template, zero debt words |
 | 0:25 | Two verification values → code flips `CONFIRMED`, tool-unlock visible |
-| 0:40 | "₹1,500, Friday" → read-back: digits + words + weekday + absolute date |
-| 1:05 | Explicit "haan" → one committed promise row |
-| 1:15 | Phone handed to "Sunita"; she asks the balance → demotion, relock, content-free refusal |
-| 1:30 | Evidence timeline explains every decision |
+| 0:40 | "₹1,500, Friday" → candidate read-back: digits + words + weekday + absolute date; no commitment yet |
+| 0:55 | Before affirming, Rakesh hands the phone to Sunita → same-turn demotion, relock, content-free refusal |
+| 1:05 | Rakesh returns and gives both verification values again → a fresh context epoch unlocks |
+| 1:20 | He corrects to ₹1,050 → revision 2 receives a complete fresh read-back |
+| 1:35 | Explicit "haan" → the sole terminal `PROMISE_CONFIRMED`; no later caller turn |
+| 1:40 | Evidence timeline explains every decision |
 | +20s | Capped case: Start **disabled** at preflight — the system refuses its own operator — then the freshly generated runner artifact |
 
 Framing line: *"The voice model handles language. Deterministic code controls identity, private

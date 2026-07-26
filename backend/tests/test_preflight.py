@@ -198,17 +198,19 @@ def test_capped_case_endpoint_blocks_without_creating_a_call(
     assert ledger.connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
 
 
-def test_ready_preflight_allows_one_start_and_database_rejects_double_start(
+@pytest.mark.parametrize("case_id", ["case-rakesh-001", "case-capped-001"])
+def test_callable_case_preflight_allows_one_start_and_rejects_double_start(
     preflight_client: TestClient,
+    case_id: str,
 ) -> None:
     first_preflight = preflight_client.post(
         "/api/preflight",
-        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+        json={"api_version": PROTOCOL_VERSION, "case_id": case_id},
         headers=preflight_headers(),
     )
     first_start = preflight_client.post(
         "/api/call/start",
-        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+        json={"api_version": PROTOCOL_VERSION, "case_id": case_id},
     )
 
     assert first_preflight.json()["result"] == PreflightResult.READY
@@ -217,12 +219,12 @@ def test_ready_preflight_allows_one_start_and_database_rejects_double_start(
 
     second_preflight = preflight_client.post(
         "/api/preflight",
-        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+        json={"api_version": PROTOCOL_VERSION, "case_id": case_id},
         headers=preflight_headers(),
     )
     second_start = preflight_client.post(
         "/api/call/start",
-        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+        json={"api_version": PROTOCOL_VERSION, "case_id": case_id},
     )
 
     assert second_preflight.json()["result"] == PreflightResult.BLOCKED_POLICY

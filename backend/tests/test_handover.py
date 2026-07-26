@@ -13,7 +13,7 @@ from app.handover import (
     HandoverSignal,
     detect_handover,
 )
-from app.seeds import RAKESH_CASE, reset_and_reseed_demo_cases
+from app.seeds import CONTACT_CAPPED_CASE, RAKESH_CASE, reset_and_reseed_demo_cases
 from app.state_machine import StateMachineCoordinator
 from app.states import CallState, IdentityState, PromiseState
 from app.templates import TemplateId, is_bank_member
@@ -172,6 +172,21 @@ def test_identified_spouse_enters_third_party_with_only_content_free_speech() ->
         assert "balance" not in rendered
         assert "loan" not in rendered
         assert RAKESH_CASE.account.lender_name.casefold() not in rendered
+    finally:
+        connection.close()
+
+
+def test_callable_meera_handover_uses_reviewed_meera_copy() -> None:
+    connection, engine, _relocks = engine_with_ledger()
+    boundary = HandoverBoundary(state=engine, case=CONTACT_CAPPED_CASE)
+    asyncio.run(advance_to_read_back(engine))
+
+    try:
+        outcome = asyncio.run(boundary.handle_turn("lo baat karo"))
+        assert outcome is not None
+        assert "Meera" in outcome.response_text
+        assert "Rakesh" not in outcome.response_text
+        assert is_bank_member(outcome.response_text)
     finally:
         connection.close()
 

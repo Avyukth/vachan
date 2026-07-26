@@ -55,13 +55,62 @@ TEMPLATE_BANK = MappingProxyType(
     }
 )
 
+DEFAULT_TEMPLATE_CASE_ID = "case-rakesh-001"
+BORROWER_TEMPLATE_IDS = frozenset(
+    {
+        TemplateId.ASK_FOR_BORROWER,
+        TemplateId.THIRD_PARTY_CALLBACK,
+    }
+)
+CASE_TEMPLATE_BANK = MappingProxyType(
+    {
+        DEFAULT_TEMPLATE_CASE_ID: MappingProxyType(
+            {template_id: TEMPLATE_BANK[template_id] for template_id in BORROWER_TEMPLATE_IDS}
+        ),
+        "case-capped-001": MappingProxyType(
+            {
+                TemplateId.ASK_FOR_BORROWER: ("क्या मैं Meera जी से बात कर सकती हूँ?",),
+                TemplateId.THIRD_PARTY_CALLBACK: (
+                    "यह Meera जी की personal call है। कृपया उनसे कह दीजिए कि Vachan assistant "
+                    "का फ़ोन आया था। बस इतना ही।",
+                    "क्या आप Meera जी से कह देंगे कि Vachan assistant का फ़ोन आया था? "
+                    "मैं संदेश में और कुछ नहीं छोड़ूँगी।",
+                    "धन्यवाद। कृपया Meera जी को सिर्फ़ इतना बता दीजिए कि Vachan assistant "
+                    "का फ़ोन आया था।",
+                ),
+            }
+        ),
+        "case-capped-002": MappingProxyType(
+            {
+                TemplateId.ASK_FOR_BORROWER: ("क्या मैं Farida जी से बात कर सकती हूँ?",),
+                TemplateId.THIRD_PARTY_CALLBACK: (
+                    "यह Farida जी की personal call है। कृपया उनसे कह दीजिए कि Vachan assistant "
+                    "का फ़ोन आया था। बस इतना ही।",
+                    "क्या आप Farida जी से कह देंगे कि Vachan assistant का फ़ोन आया था? "
+                    "मैं संदेश में और कुछ नहीं छोड़ूँगी।",
+                    "धन्यवाद। कृपया Farida जी को सिर्फ़ इतना बता दीजिए कि Vachan assistant "
+                    "का फ़ोन आया था।",
+                ),
+            }
+        ),
+    }
+)
+
 BANK_MEMBERS = frozenset(
-    text for template_variants in TEMPLATE_BANK.values() for text in template_variants
+    text
+    for template_variants in (
+        *TEMPLATE_BANK.values(),
+        *(variants for case_bank in CASE_TEMPLATE_BANK.values() for variants in case_bank.values()),
+    )
+    for text in template_variants
 )
 TEMPLATE_IDS_BY_TEXT = MappingProxyType(
     {
         text: template_id
-        for template_id, template_variants in TEMPLATE_BANK.items()
+        for template_id, template_variants in (
+            *TEMPLATE_BANK.items(),
+            *(item for case_bank in CASE_TEMPLATE_BANK.values() for item in case_bank.items()),
+        )
         for text in template_variants
     }
 )
@@ -87,11 +136,25 @@ class UnreviewedSpeechError(ValueError):
 RawClassification = str | bytes | Mapping[str, Any] | PreConfirmationClassification
 
 
-def render_template(template_id: TemplateId, *, variant: int = 0) -> str:
-    """Return one reviewed utterance; never interpolate model-authored prose."""
+def render_template(
+    template_id: TemplateId,
+    *,
+    variant: int = 0,
+    case_id: str | None = None,
+) -> str:
+    """Return reviewed copy selected by typed ID and governed case ID."""
     if not isinstance(template_id, TemplateId):
         raise UnreviewedSpeechError("operational speech requires a typed TemplateId")
-    variants = TEMPLATE_BANK[template_id]
+    if template_id in BORROWER_TEMPLATE_IDS:
+        governed_case_id = case_id or DEFAULT_TEMPLATE_CASE_ID
+        try:
+            variants = CASE_TEMPLATE_BANK[governed_case_id][template_id]
+        except KeyError as error:
+            raise UnreviewedSpeechError(
+                "borrower-specific speech requires a governed case ID"
+            ) from error
+    else:
+        variants = TEMPLATE_BANK[template_id]
     if variant < 0 or variant >= len(variants):
         raise TemplateVariantError(
             f"{template_id.value} has {len(variants)} reviewed variant(s), not variant {variant}"
@@ -111,6 +174,7 @@ def select_preconfirmation_response(
     raw_classification: RawClassification,
     *,
     callback_variant: int = 0,
+    case_id: str | None = None,
 ) -> TemplateSelection:
     """Validate an LLM classification and deterministically choose fixed speech."""
     validation = validate_preconfirmation_classification(raw_classification)
@@ -118,7 +182,7 @@ def select_preconfirmation_response(
     variant = callback_variant if template_id is TemplateId.THIRD_PARTY_CALLBACK else 0
     return TemplateSelection(
         template_id=template_id,
-        text=render_template(template_id, variant=variant),
+        text=render_template(template_id, variant=variant, case_id=case_id),
         classification_accepted=validation.accepted,
     )
 

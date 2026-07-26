@@ -259,7 +259,8 @@ CallbackScheduler = Callable[[Mapping[str, str]], None]
 class ThirdPartySession:
     """Three safe holds followed by one authorized, content-free callback."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, case_id: str | None = None) -> None:
+        self._case_id = case_id
         self._response_count = 0
         self._completed = False
 
@@ -281,7 +282,11 @@ class ThirdPartySession:
         return ThirdPartyReply(
             push_number=self._response_count,
             template_variant=variant,
-            text=render_template(TemplateId.THIRD_PARTY_CALLBACK, variant=variant),
+            text=render_template(
+                TemplateId.THIRD_PARTY_CALLBACK,
+                variant=variant,
+                case_id=self._case_id,
+            ),
         )
 
     def complete(

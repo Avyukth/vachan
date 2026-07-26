@@ -16,7 +16,7 @@ from app.actions import (
 from app.controller import DialogueController, controller_preconfirmation_template
 from app.db import EvidenceLedger
 from app.guard import SAFE_OUTPUT_LINE
-from app.seeds import RAKESH_CASE
+from app.seeds import CONTACT_CAPPED_CASE, RAKESH_CASE, MockCaseSeed
 from app.states import IdentityState
 from app.templates import TemplateId, is_bank_member, render_template
 from app.tools import ToolPermissionDenied
@@ -32,6 +32,7 @@ def _controller(
     frozen_demo_clock,
     name: str,
     *turns: tuple[str, dict[str, object]],
+    case: MockCaseSeed = RAKESH_CASE,
 ) -> tuple[DialogueController, FakeSarvamClient]:
     scenario = SarvamScenario(
         name=name,
@@ -41,13 +42,49 @@ def _controller(
     return (
         DialogueController(
             call_id=f"call-controller-routing-{name}",
-            case=RAKESH_CASE,
+            case=case,
             ledger=EvidenceLedger(connection),
             sarvam=fake,
             clock=frozen_demo_clock.now,
         ),
         fake,
     )
+
+
+@pytest.mark.parametrize(
+    ("case", "borrower_name"),
+    [
+        (RAKESH_CASE, "Rakesh"),
+        (CONTACT_CAPPED_CASE, "Meera"),
+    ],
+)
+def test_callable_case_routes_to_its_reviewed_borrower_copy(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+    case: MockCaseSeed,
+    borrower_name: str,
+) -> None:
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        f"case-copy-{case.case_id}",
+        ("haan boliye", {"intent": "borrower_present"}),
+        case=case,
+    )
+
+    async def exercise() -> str:
+        await controller.start()
+        return (await controller.run_turn()).speech_text
+
+    speech = asyncio.run(exercise())
+
+    assert speech == render_template(
+        TemplateId.ASK_FOR_BORROWER,
+        case_id=case.case_id,
+    )
+    assert borrower_name in speech
+    assert is_bank_member(speech)
+    fake.assert_consumed()
 
 
 @pytest.mark.parametrize("intent", list(PreConfirmationIntent))

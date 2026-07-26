@@ -203,7 +203,7 @@ class HandoverBoundary:
             detection=detection,
             identity_state=identity,
             response_template=template,
-            response_text=render_template(template),
+            response_text=render_template(template, case_id=self._case.case_id),
             context=self.build_new_speaker_context(utterance),
         )
 

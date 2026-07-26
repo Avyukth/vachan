@@ -7,9 +7,9 @@ import pytest
 from app.actions import PreConfirmationIntent
 from app.contracts import Disposition
 from app.guard import OutputGuardContext, guard_for_tts
-from app.seeds import RAKESH_CASE
+from app.seeds import CONTACT_CAPPED_CASE, RAKESH_CASE
 from app.states import IdentityState, PromiseState
-from app.templates import TEMPLATE_BANK, TemplateId
+from app.templates import TEMPLATE_BANK, TemplateId, is_bank_member
 from app.third_party import (
     ContentFreeCallbackPayload,
     SpeakerRouteKind,
@@ -116,6 +116,15 @@ def test_three_pushes_use_all_non_identical_reviewed_templates() -> None:
     assert len({reply.text for reply in replies}) == 3
     with pytest.raises(ThirdPartyResponsesIncomplete):
         session.next_hold()
+
+
+def test_callable_meera_case_uses_only_meera_reviewed_holds() -> None:
+    session = ThirdPartySession(case_id=CONTACT_CAPPED_CASE.case_id)
+    replies = [session.next_hold() for _ in range(3)]
+
+    assert all("Meera" in reply.text for reply in replies)
+    assert all("Rakesh" not in reply.text for reply in replies)
+    assert all(is_bank_member(reply.text) for reply in replies)
 
 
 def test_all_three_holds_clear_real_output_guard_without_block_events() -> None:

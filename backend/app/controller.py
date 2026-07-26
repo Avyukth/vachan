@@ -202,7 +202,7 @@ class DialogueController:
         self._verification_evidence = VerificationEvidenceRepository(ledger)
         self.verification = self._verification_evidence.reconstruct_session(call_id)
         self._pending_verification = PendingVerificationAttempt()
-        self.third_party = ThirdPartySession()
+        self.third_party = ThirdPartySession(case_id=case.case_id)
         self.callback_payloads: list[dict[str, str]] = []
         self.history: tuple[PromptMessage, ...] = ()
         self._started = False
@@ -240,6 +240,15 @@ class DialogueController:
         """Expose the single authoritative state boundary to call-scoped safety adapters."""
 
         return self._coordinator
+
+    def _reviewed_template(self, template_id: TemplateId, *, variant: int = 0) -> str:
+        """Select immutable reviewed copy for this call's governed case."""
+
+        return render_template(
+            template_id,
+            variant=variant,
+            case_id=self.case.case_id,
+        )
 
     async def start(self) -> None:
         """Create one active call and persist the complete startup path."""
@@ -528,7 +537,7 @@ class DialogueController:
         )
         if isinstance(result, PendingVerificationAttempt):
             self._pending_verification = result
-            return render_template(TemplateId.VERIFY_REQUEST), None
+            return self._reviewed_template(TemplateId.VERIFY_REQUEST), None
         snapshot = self.snapshot
         await self._verification_evidence.append_attempt(
             call_id=self.call_id,
@@ -546,8 +555,8 @@ class DialogueController:
             return "धन्यवाद। पहचान की जाँच पूरी हुई।", None
         if result.disposition is Disposition.VERIFICATION_FAILED:
             assert result.response_template is not None
-            return render_template(result.response_template), result.disposition
-        return render_template(TemplateId.VERIFY_REQUEST), None
+            return self._reviewed_template(result.response_template), result.disposition
+        return self._reviewed_template(TemplateId.VERIFY_REQUEST), None
 
     async def _schedule_third_party_callback(self) -> None:
         payload = ContentFreeCallbackPayload().as_tool_payload()
@@ -579,7 +588,7 @@ class DialogueController:
         )
         self.verification = VerificationSession()
         self._pending_verification = PendingVerificationAttempt()
-        self.third_party = ThirdPartySession()
+        self.third_party = ThirdPartySession(case_id=self.case.case_id)
         self.history = ()
         return True
 
@@ -613,18 +622,18 @@ class DialogueController:
                     reason_code=route.reason_code,
                 )
                 self._pending_verification = PendingVerificationAttempt()
-                return render_template(route.template_id), None
+                return self._reviewed_template(route.template_id), None
             if route.identity_target is IdentityState.VERIFYING:
-                return render_template(route.template_id), None
+                return self._reviewed_template(route.template_id), None
             if route.reason_code != "speaker_identity_unresolved":
-                return render_template(route.template_id), None
-            return render_template(validated_template), None
+                return self._reviewed_template(route.template_id), None
+            return self._reviewed_template(validated_template), None
 
         if self.snapshot.identity is IdentityState.THIRD_PARTY:
             # A model label cannot unlock a shared handset. Only the deterministic
             # explicit-borrower matcher may start a fresh verification epoch.
             if await self._begin_fresh_borrower_return(transcript):
-                return render_template(TemplateId.VERIFY_REQUEST), None
+                return self._reviewed_template(TemplateId.VERIFY_REQUEST), None
             hold = self.third_party.next_hold()
             if self.third_party.response_count == 3:
                 await self._schedule_third_party_callback()
@@ -641,10 +650,10 @@ class DialogueController:
             hold = self.third_party.next_hold()
             return hold.text, None
         if route.identity_target is IdentityState.VERIFYING:
-            return render_template(route.template_id), None
+            return self._reviewed_template(route.template_id), None
         if route.reason_code != "speaker_identity_unresolved":
-            return render_template(route.template_id), None
-        return render_template(validated_template), None
+            return self._reviewed_template(route.template_id), None
+        return self._reviewed_template(validated_template), None
 
     async def _invalid_promise_action(
         self,
@@ -849,9 +858,9 @@ class DialogueController:
             # replayed to the new speaker. The next prompt starts from a fixed
             # content-free assistant line only.
             self.history = ()
-            return render_template(TemplateId.ASK_FOR_BORROWER), None
+            return self._reviewed_template(TemplateId.ASK_FOR_BORROWER), None
         if not validation.accepted:
-            return render_template(TemplateId.CLARIFY), None
+            return self._reviewed_template(TemplateId.CLARIFY), None
         if action.intent is Intent.OFFER_PROMISE:
             try:
                 response = await self._prepare_promise(
@@ -860,7 +869,7 @@ class DialogueController:
                     action.date_phrase,
                 )
             except ToolPermissionDenied:
-                return render_template(TemplateId.CLARIFY), None
+                return self._reviewed_template(TemplateId.CLARIFY), None
             return response, None
         if action.intent is Intent.CORRECT_PROMISE:
             try:
@@ -870,7 +879,7 @@ class DialogueController:
                     action.date_phrase,
                 )
             except ToolPermissionDenied:
-                return render_template(TemplateId.CLARIFY), None
+                return self._reviewed_template(TemplateId.CLARIFY), None
             return response, None
         if action.intent is Intent.CONFIRM:
             return await self._confirm_promise()
@@ -881,7 +890,7 @@ class DialogueController:
                 reason_code="promise_read_back_rejected",
             )
             return "ठीक है। कोई वादा दर्ज नहीं किया गया।", None
-        return render_template(TemplateId.CLARIFY), None
+        return self._reviewed_template(TemplateId.CLARIFY), None
 
     async def run_turn(self, audio: bytes = b"text-mode-audio") -> ControllerTurn:
         """Run STT → isolated prompt → typed action → guard → TTS once."""
@@ -908,7 +917,7 @@ class DialogueController:
             if handover is not None:
                 self.verification = VerificationSession()
                 self._pending_verification = PendingVerificationAttempt()
-                self.third_party = ThirdPartySession()
+                self.third_party = ThirdPartySession(case_id=self.case.case_id)
                 self.history = ()
         await self._begin_fresh_borrower_return(transcript)
         model_utterance = transcript
@@ -961,7 +970,9 @@ class DialogueController:
             raise RuntimeError("call must be started before the opening turn")
         if self.disposition is not None:
             raise ControllerClosedError("terminal call cannot speak an opening turn")
-        speech, audio_response = await self._speak(render_template(TemplateId.INTRO_ANTISCAM))
+        speech, audio_response = await self._speak(
+            self._reviewed_template(TemplateId.INTRO_ANTISCAM)
+        )
         return ControllerTurn(
             transcript="",
             speech_text=speech,
@@ -976,7 +987,7 @@ class DialogueController:
             raise RuntimeError("call must be started before speaking")
         if self.disposition is not None:
             raise ControllerClosedError("terminal call cannot speak")
-        speech, audio_response = await self._speak(render_template(template_id))
+        speech, audio_response = await self._speak(self._reviewed_template(template_id))
         return ControllerTurn(
             transcript="",
             speech_text=speech,

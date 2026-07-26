@@ -6,6 +6,7 @@ from app.guard import SAFE_OUTPUT_LINE
 from app.seeds import DEMO_CASES
 from app.templates import (
     BANK_MEMBERS,
+    CASE_TEMPLATE_BANK,
     TEMPLATE_BANK,
     TemplateId,
     TemplateVariantError,
@@ -105,6 +106,40 @@ def test_three_callback_variants_are_distinct_and_content_free() -> None:
     assert all(is_bank_member(text) for text in variants)
 
 
+@pytest.mark.parametrize(
+    ("case_id", "borrower_name"),
+    [
+        ("case-rakesh-001", "Rakesh"),
+        ("case-capped-001", "Meera"),
+        ("case-capped-002", "Farida"),
+    ],
+)
+def test_governed_cases_select_only_their_reviewed_borrower_copy(
+    case_id: str,
+    borrower_name: str,
+) -> None:
+    ask = render_template(TemplateId.ASK_FOR_BORROWER, case_id=case_id)
+    callbacks = tuple(
+        render_template(
+            TemplateId.THIRD_PARTY_CALLBACK,
+            variant=variant,
+            case_id=case_id,
+        )
+        for variant in range(3)
+    )
+
+    assert borrower_name in ask
+    assert all(borrower_name in callback for callback in callbacks)
+    assert ask in BANK_MEMBERS
+    assert callbacks == CASE_TEMPLATE_BANK[case_id][TemplateId.THIRD_PARTY_CALLBACK]
+    assert all(is_bank_member(callback) for callback in callbacks)
+
+
+def test_unknown_case_cannot_synthesize_borrower_specific_copy() -> None:
+    with pytest.raises(UnreviewedSpeechError, match="governed case ID"):
+        render_template(TemplateId.ASK_FOR_BORROWER, case_id="case-unknown")
+
+
 def test_code_can_select_verification_failure_close_without_an_llm_intent() -> None:
     """Attempt-limit code owns the terminal close; the model cannot trigger it."""
     response = render_template(TemplateId.VERIFY_FAILED_CLOSE)
@@ -184,4 +219,4 @@ def test_every_bank_member_avoids_preconfirmation_disclosure_markers(
 def test_template_ids_and_bank_are_complete() -> None:
     """Every frozen ID has reviewed copy and no extra family exists."""
     assert set(TEMPLATE_BANK) == set(TemplateId)
-    assert len(BANK_MEMBERS) == 11
+    assert len(BANK_MEMBERS) == 19

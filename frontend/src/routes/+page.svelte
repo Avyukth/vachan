@@ -38,6 +38,8 @@
 	let preflightDetail = $state('Choose a mock case after completing both browser audio checks.');
 	let preflightBusy = $state(false);
 	let activeCallId = $state('');
+	let takeoverActive = $state(false);
+	let operatorEndReason = $state('');
 	let replayFixture = $state<ReplayFixture>('happy');
 	let replayState = $state<ReplayState>('idle');
 	let replayDetail = $state('Backend replay is available only with DEV_REPLAY=1.');
@@ -81,7 +83,7 @@
 		if (replayState === 'playing') return 'live';
 		if (replayState === 'complete') return 'complete';
 		if (replayState === 'error') return 'degraded';
-		return activeCallId ? 'connecting' : 'idle';
+		return activeCallId ? 'live' : 'idle';
 	});
 	let canRunPreflight = $derived(
 		microphoneState === 'ready' &&
@@ -272,6 +274,8 @@
 			if (!response.ok) throw new Error(`Start was refused with HTTP ${response.status}.`);
 			const body = (await response.json()) as { call_id: string };
 			activeCallId = body.call_id;
+			takeoverActive = false;
+			operatorEndReason = '';
 			preflightDetail = `Active mock call: ${body.call_id}`;
 		} catch (error: unknown) {
 			preflightResult = 'BLOCKED_POLICY';
@@ -284,6 +288,11 @@
 
 	async function endOperatorCall(): Promise<void> {
 		if (!activeCallId) return;
+		const reason = takeoverActive ? operatorEndReason.trim() : 'operator_end';
+		if (!reason) {
+			preflightDetail = 'Enter an operator ending reason before closing a taken-over call.';
+			return;
+		}
 		stopAgentAudio();
 		try {
 			const response = await fetch(API_ROUTES.callEnd, {
@@ -292,12 +301,16 @@
 				body: JSON.stringify({
 					api_version: PROTOCOL_VERSION,
 					call_id: activeCallId,
-					reason: 'operator_end'
+					reason
 				})
 			});
 			if (!response.ok) throw new Error(`End call failed with HTTP ${response.status}.`);
+			const event = (await response.json()) as ServerEvent;
+			replayEvents = [...replayEvents, event];
 
 			activeCallId = '';
+			takeoverActive = false;
+			operatorEndReason = '';
 			resetPreflight('Call ended safely. Run policy preflight before starting another call.');
 			resetDetail =
 				'The active call ended successfully. Demo reset is available after explicit confirmation.';
@@ -310,16 +323,32 @@
 	}
 
 	async function takeoverOperatorCall(): Promise<void> {
-		if (!activeCallId) return;
+		if (!activeCallId || takeoverActive) return;
+		// The physical demo shares one room and microphone. Stop audible agent
+		// output synchronously on the click; no operator-audio routing is opened.
 		stopAgentAudio();
-		await fetch(API_ROUTES.takeover, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				api_version: PROTOCOL_VERSION,
-				call_id: activeCallId
-			})
-		});
+		try {
+			const response = await fetch(API_ROUTES.takeover, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					api_version: PROTOCOL_VERSION,
+					call_id: activeCallId
+				})
+			});
+			if (!response.ok) throw new Error(`Takeover failed with HTTP ${response.status}.`);
+			const event = (await response.json()) as ServerEvent;
+			replayEvents = [...replayEvents, event];
+			takeoverActive = true;
+			operatorEndReason = '';
+			preflightDetail =
+				'OPERATOR TAKEOVER — agent is permanently silenced. Speak directly, then end with a reason.';
+		} catch (error: unknown) {
+			preflightDetail =
+				error instanceof Error
+					? error.message
+					: 'Takeover failed closed; agent audio remains stopped.';
+		}
 	}
 
 	function requestDemoReset(): void {
@@ -628,6 +657,8 @@
 		streamLabel={replayLabel || 'LEDGER EVENT STREAM'}
 		onEnd={activeCallId ? endOperatorCall : undefined}
 		onTakeover={activeCallId ? takeoverOperatorCall : undefined}
+		{takeoverActive}
+		bind:endReason={operatorEndReason}
 	/>
 
 	<footer>

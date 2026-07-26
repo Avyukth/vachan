@@ -12,6 +12,8 @@ from app.reset import router as reset_router
 from app.sarvam_client import load_sarvam_api_key
 from app.stt import SttSessionRegistry
 from app.stt import router as stt_router
+from app.takeover import TakeoverRegistry
+from app.takeover import router as takeover_router
 from app.tts import router as tts_router
 
 
@@ -20,9 +22,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Load the backend-only Sarvam credential before accepting traffic."""
     application.state.sarvam_api_key = load_sarvam_api_key()
     application.state.stt_sessions = SttSessionRegistry()
+    application.state.takeover_sessions = TakeoverRegistry()
     try:
         yield
     finally:
+        application.state.takeover_sessions = None
         application.state.stt_sessions.cancel_all()
         application.state.stt_sessions = None
         ledger = getattr(application.state, "evidence_ledger", None)
@@ -42,6 +46,7 @@ app.include_router(preflight_router)
 app.include_router(replay_router)
 app.include_router(reset_router)
 app.include_router(stt_router)
+app.include_router(takeover_router)
 app.include_router(tts_router)
 
 

@@ -11,6 +11,8 @@
 		streamLabel?: string;
 		onEnd?: () => void;
 		onTakeover?: () => void;
+		takeoverActive?: boolean;
+		endReason?: string;
 	}
 
 	let {
@@ -18,13 +20,19 @@
 		connectionState = 'idle',
 		streamLabel = 'LEDGER EVENT STREAM',
 		onEnd,
-		onTakeover
+		onTakeover,
+		takeoverActive = false,
+		endReason = $bindable('')
 	}: Props = $props();
 
 	let view = $derived(buildOperatorView(events, connectionState));
-	let actionsDisabled = $derived(
+	let baseActionsDisabled = $derived(
 		view.complete || connectionState !== 'live' || (!onEnd && !onTakeover)
 	);
+	let endDisabled = $derived(
+		baseActionsDisabled || !onEnd || (takeoverActive && !endReason.trim())
+	);
+	let takeoverDisabled = $derived(baseActionsDisabled || !onTakeover || takeoverActive);
 </script>
 
 <section class="operator-console" aria-labelledby="operator-console-heading">
@@ -48,6 +56,12 @@
 			<span>{view.alert.detail}</span>
 		</div>
 	{/if}
+	{#if takeoverActive}
+		<div class="takeover-banner" role="alert">
+			<strong>OPERATOR TAKEOVER — AGENT SILENCED</strong>
+			<span>Agent output cannot resume. Speak directly, then record why you ended the call.</span>
+		</div>
+	{/if}
 
 	<div class="operator-columns">
 		<article class="console-card call-card">
@@ -57,15 +71,26 @@
 			</div>
 			<p class="speaker-label">{view.latestSpeaker.toUpperCase()} · SAFE OUTPUT</p>
 			<blockquote>{view.latestUtterance}</blockquote>
+			{#if takeoverActive}
+				<label class="end-reason">
+					<span>REQUIRED END REASON</span>
+					<input
+						bind:value={endReason}
+						maxlength="500"
+						placeholder="Why the operator ended this call"
+						autocomplete="off"
+					/>
+				</label>
+			{/if}
 			<div class="call-actions" aria-label="Operator call actions">
-				<button type="button" class="secondary-action" onclick={onEnd} disabled={actionsDisabled}>
+				<button type="button" class="secondary-action" onclick={onEnd} disabled={endDisabled}>
 					End call
 				</button>
 				<button
 					type="button"
 					class="takeover-action"
 					onclick={onTakeover}
-					disabled={actionsDisabled}
+					disabled={takeoverDisabled}
 				>
 					Break-glass takeover
 				</button>
@@ -194,6 +219,53 @@
 		border-left: 3px solid var(--color-demoted);
 		padding: 0.75rem 1rem;
 		background: color-mix(in srgb, var(--color-demoted), transparent 88%);
+	}
+
+	.takeover-banner {
+		display: grid;
+		gap: 0.35rem;
+		margin-bottom: 1rem;
+		border: 1px solid var(--color-demoted);
+		border-left-width: 4px;
+		padding: 0.85rem 1rem;
+		background: color-mix(in srgb, var(--color-demoted), transparent 82%);
+	}
+
+	.takeover-banner strong,
+	.takeover-banner span,
+	.end-reason span {
+		font-family: var(--font-mono);
+	}
+
+	.takeover-banner strong {
+		font-size: 0.78rem;
+	}
+
+	.takeover-banner span {
+		color: var(--color-muted);
+		font-size: 0.72rem;
+	}
+
+	.end-reason {
+		display: grid;
+		gap: 0.4rem;
+		margin-bottom: 1rem;
+	}
+
+	.end-reason span {
+		color: var(--color-muted);
+		font-size: 0.65rem;
+		letter-spacing: 0.07em;
+	}
+
+	.end-reason input {
+		width: 100%;
+		box-sizing: border-box;
+		border: 1px solid var(--color-seam);
+		border-radius: 0.4rem;
+		padding: 0.65rem;
+		background: var(--color-panel);
+		color: var(--color-text);
 	}
 
 	.operator-alert strong,

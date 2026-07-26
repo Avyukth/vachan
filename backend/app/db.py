@@ -14,7 +14,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from app.seeds import MockCaseSeed
     from app.tools import ToolDecision
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEMO_MOCK_LABEL = "DEMO / MOCK DATA"
 MutationT = TypeVar("MutationT")
 
@@ -132,10 +132,36 @@ CREATE TABLE IF NOT EXISTS operator_notes (
     text TEXT NOT NULL CHECK (length(trim(text)) > 0)
 );
 
+CREATE TABLE IF NOT EXISTS demo_resets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL CHECK (datetime(ts) IS NOT NULL),
+    governed_case_count INTEGER NOT NULL CHECK (governed_case_count >= 0),
+    removed_call_count INTEGER NOT NULL CHECK (removed_call_count >= 0),
+    redacted_reason TEXT NOT NULL CHECK (redacted_reason = 'sanctioned_demo_reset')
+);
+
 CREATE TRIGGER IF NOT EXISTS prevent_events_update
 BEFORE UPDATE ON events
 BEGIN
     SELECT RAISE(ABORT, 'events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_tool_decisions_update
+BEFORE UPDATE ON tool_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'tool_decisions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_promise_candidates_revision_update
+BEFORE UPDATE ON promise_candidates
+WHEN OLD.id != NEW.id
+  OR OLD.call_id != NEW.call_id
+  OR OLD.caller_phrase != NEW.caller_phrase
+  OR OLD.amount_minor != NEW.amount_minor
+  OR OLD.date_iso != NEW.date_iso
+  OR OLD.revision != NEW.revision
+BEGIN
+    SELECT RAISE(ABORT, 'promise candidate revisions are append-only');
 END;
 
 CREATE TRIGGER IF NOT EXISTS prevent_promises_update
@@ -148,6 +174,67 @@ CREATE TRIGGER IF NOT EXISTS prevent_operator_notes_update
 BEFORE UPDATE ON operator_notes
 BEGIN
     SELECT RAISE(ABORT, 'operator_notes are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_demo_resets_update
+BEFORE UPDATE ON demo_resets
+BEGIN
+    SELECT RAISE(ABORT, 'demo_resets are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_cases_delete
+BEFORE DELETE ON cases
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'cases are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_calls_delete
+BEFORE DELETE ON calls
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'calls are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_events_delete
+BEFORE DELETE ON events
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'events are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_tool_decisions_delete
+BEFORE DELETE ON tool_decisions
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'tool_decisions are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_promise_candidates_delete
+BEFORE DELETE ON promise_candidates
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'promise candidate revisions are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_promises_delete
+BEFORE DELETE ON promises
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'promises are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_operator_notes_delete
+BEFORE DELETE ON operator_notes
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'operator_notes are append-only outside sanctioned reset');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_demo_resets_delete
+BEFORE DELETE ON demo_resets
+BEGIN
+    SELECT RAISE(ABORT, 'demo_resets are append-only');
 END;
 """
 
@@ -169,7 +256,7 @@ def connect_database(path: str | Path = "vachan.db") -> sqlite3.Connection:
 
 
 def migrate_schema(connection: sqlite3.Connection) -> None:
-    """Idempotently apply the additive v1 schema and record ``user_version``."""
+    """Idempotently apply the additive schema and record ``user_version``."""
 
     current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if current_version > SCHEMA_VERSION:
@@ -177,6 +264,10 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
             f"Database user_version {current_version} is newer than supported {SCHEMA_VERSION}"
         )
 
+    # Trigger evaluation fails closed even before an EvidenceLedger is
+    # constructed. The ledger replaces this function with its private,
+    # connection-scoped authorization callback.
+    connection.create_function("vachan_demo_reset_authorized", 0, lambda: 0)
     connection.executescript(SCHEMA_SQL)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -265,6 +356,24 @@ class EvidenceLedger:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
         self._write_lock = asyncio.Lock()
+        self._demo_reset_authorized = False
+        self.connection.create_function(
+            "vachan_demo_reset_authorized",
+            0,
+            lambda: int(self._demo_reset_authorized),
+        )
+
+    @contextmanager
+    def _authorize_demo_reset(self) -> Iterator[None]:
+        """Open the reset-only deletion window on this connection synchronously."""
+
+        if self._demo_reset_authorized:
+            raise RuntimeError("demo reset authorization is not re-entrant")
+        self._demo_reset_authorized = True
+        try:
+            yield
+        finally:
+            self._demo_reset_authorized = False
 
     @classmethod
     def open(cls, path: str | Path = "vachan.db") -> EvidenceLedger:
@@ -493,12 +602,30 @@ class EvidenceLedger:
         """Implement the sanctioned reset for governed demo rows only."""
 
         anchor = _iso_timestamp(demo_time_anchor)
-        with _immediate_transaction(self.connection):
+        with self._authorize_demo_reset(), _immediate_transaction(self.connection):
             active_call = self.connection.execute(
                 "SELECT 1 FROM calls WHERE disposition IS NULL LIMIT 1"
             ).fetchone()
             if active_call is not None:
                 raise ActiveCallExists("demo reset is unavailable during an active call")
+
+            governed_case_count = int(
+                self.connection.execute(
+                    "SELECT COUNT(*) FROM cases WHERE mock_label = ?",
+                    (DEMO_MOCK_LABEL,),
+                ).fetchone()[0]
+            )
+            removed_call_count = int(
+                self.connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM calls
+                    JOIN cases ON cases.id = calls.case_id
+                    WHERE cases.mock_label = ?
+                    """,
+                    (DEMO_MOCK_LABEL,),
+                ).fetchone()[0]
+            )
 
             self.connection.execute(
                 "DELETE FROM cases WHERE mock_label = ?",
@@ -541,6 +668,18 @@ class EvidenceLedger:
                         anchor,
                     ),
                 )
+            self.connection.execute(
+                """
+                INSERT INTO demo_resets (
+                    ts, governed_case_count, removed_call_count, redacted_reason
+                ) VALUES (?, ?, ?, 'sanctioned_demo_reset')
+                """,
+                (
+                    datetime.now(UTC).isoformat(),
+                    governed_case_count,
+                    removed_call_count,
+                ),
+            )
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

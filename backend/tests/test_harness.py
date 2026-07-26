@@ -15,7 +15,7 @@ from app.actions import (
     validate_preconfirmation_classification,
 )
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
-from app.db import EvidenceLedger
+from app.db import SCHEMA_VERSION, EvidenceLedger
 from app.seeds import DEMO_TIME_ANCHOR
 from app.states import CallState, IdentityState, PromiseState
 from tests.fakes import FakeSarvamClient, FrozenDemoClock, SarvamScenario
@@ -51,7 +51,7 @@ def _snapshot(identity: IdentityState = IdentityState.UNVERIFIED) -> StateSnapsh
 def test_database_fixture_is_migrated_seeded_and_fresh(
     db_connection: sqlite3.Connection,
 ) -> None:
-    assert db_connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert db_connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert [row["id"] for row in db_connection.execute("SELECT id FROM cases ORDER BY id")] == [
         "case-capped-001",
         "case-rakesh-001",

@@ -22,6 +22,7 @@ NOW = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
 EXPECTED_TABLES = {
     "calls",
     "cases",
+    "demo_resets",
     "events",
     "operator_notes",
     "promise_candidates",
@@ -101,7 +102,7 @@ def insert_candidate(
     )
 
 
-def test_schema_migration_is_idempotent_and_has_exactly_seven_domain_tables(
+def test_schema_migration_is_idempotent_and_has_expected_domain_tables(
     connection: sqlite3.Connection,
 ) -> None:
     migrate_schema(connection)
@@ -117,6 +118,43 @@ def test_schema_migration_is_idempotent_and_has_exactly_seven_domain_tables(
     assert tables == EXPECTED_TABLES
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+def test_v1_database_additively_migrates_reset_audit_and_delete_guards(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute("DROP TABLE demo_resets")
+    connection.execute("PRAGMA user_version = 1")
+
+    migrate_schema(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert (
+        connection.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_schema
+            WHERE type = 'table' AND name = 'demo_resets'
+            """
+        ).fetchone()[0]
+        == 1
+    )
+    trigger_names = {
+        row["name"]
+        for row in connection.execute(
+            """
+            SELECT name FROM sqlite_schema
+            WHERE type = 'trigger' AND name LIKE 'prevent_%_delete'
+            """
+        )
+    }
+    assert {
+        "prevent_events_delete",
+        "prevent_tool_decisions_delete",
+        "prevent_promise_candidates_delete",
+        "prevent_promises_delete",
+        "prevent_operator_notes_delete",
+        "prevent_demo_resets_delete",
+    }.issubset(trigger_names)
 
 
 def test_case_schema_has_no_generic_prompt_log_or_blocked_draft_columns(

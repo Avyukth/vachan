@@ -82,9 +82,6 @@ final artifact:
 These are conservative claims for a concurrently changing working tree. Remove or narrow a
 limitation only after its named bead is closed with an exact record of what was tested.
 
-- `sarvam-jg9`: the operator console's replay is explicitly labeled, but the live SQLite-backed
-  `/api/evidence/{call_id}` journey is not yet mounted. Do not describe replay data or locally
-  appended UI events as a live ledger stream.
 - `sarvam-bb8.1`: the atomic promise-evidence applier landed in `0f13db2`, while full acceptance
   and closeout remain pending. Do not claim every promise transition is proven atomic yet.
 - `sarvam-ls0.1`: the permission decision is recorded before promise writes, but the asynchronous

@@ -1,9 +1,18 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
 	import { AgentAudioPlayback, fetchAudioCheck } from '$lib/audio';
 	import { connectReplay, type ReplayFixture } from '$lib/replay';
-	import type { EventType, JsonValue, ServerEvent } from '$lib/protocol';
+	import {
+		API_ROUTES,
+		PROTOCOL_VERSION,
+		type CaseSummary,
+		type EventType,
+		type JsonValue,
+		type PreflightCheck,
+		type PreflightResult,
+		type ServerEvent
+	} from '$lib/protocol';
 
 	type MicrophoneState = 'idle' | 'requesting' | 'ready' | 'blocked' | 'unsupported';
 	type AudioOutputState =
@@ -19,6 +28,13 @@
 	let microphoneDetail = $state('Permission has not been requested on this browser.');
 	let audioOutputState = $state<AudioOutputState>('idle');
 	let audioOutputDetail = $state('Bulbul playback has not been checked through headphones.');
+	let cases = $state<CaseSummary[]>([]);
+	let selectedCaseId = $state('');
+	let preflightResult = $state<PreflightResult | 'NOT_RUN'>('NOT_RUN');
+	let preflightChecks = $state<PreflightCheck[]>([]);
+	let preflightDetail = $state('Choose a mock case after completing both browser audio checks.');
+	let preflightBusy = $state(false);
+	let activeCallId = $state('');
 	let replayFixture = $state<ReplayFixture>('happy');
 	let replayState = $state<ReplayState>('idle');
 	let replayDetail = $state('Backend replay is available only with DEV_REPLAY=1.');
@@ -74,6 +90,49 @@
 	let identityState = $derived(machineState(replayEvents, 'identity'));
 	let promiseState = $derived(machineState(replayEvents, 'promise'));
 	let disposition = $derived(payloadString(latestEvent(replayEvents, 'disposition'), 'disposition'));
+	let canRunPreflight = $derived(
+		microphoneState === 'ready' &&
+			audioOutputState === 'ready' &&
+			selectedCaseId.length > 0 &&
+			!preflightBusy &&
+			!activeCallId
+	);
+	let canStartCall = $derived(
+		preflightResult === 'READY' && selectedCaseId.length > 0 && !preflightBusy && !activeCallId
+	);
+
+	function resetPreflight(message: string): void {
+		preflightResult = 'NOT_RUN';
+		preflightChecks = [];
+		preflightDetail = message;
+	}
+
+	async function loadCases(): Promise<void> {
+		try {
+			const response = await fetch(API_ROUTES.cases);
+			if (!response.ok) throw new Error(`Case list failed with HTTP ${response.status}.`);
+			const body = (await response.json()) as { cases: CaseSummary[] };
+			cases = body.cases;
+			selectedCaseId = cases[0]?.case_id ?? '';
+			resetPreflight(
+				selectedCaseId
+					? 'Complete both browser audio checks, then run policy preflight.'
+					: 'No mock cases are available.'
+			);
+		} catch (error: unknown) {
+			preflightResult = 'BLOCKED_TECHNICAL';
+			preflightDetail =
+				error instanceof Error ? error.message : 'Backend case list is unavailable.';
+			preflightChecks = [
+				{
+					api_version: PROTOCOL_VERSION,
+					name: 'backend',
+					pass: false,
+					detail: 'Backend is unavailable; restart it and rerun preflight.'
+				}
+			];
+		}
+	}
 
 	async function requestMicrophone(): Promise<void> {
 		if (!navigator.mediaDevices?.getUserMedia) {
@@ -100,6 +159,7 @@
 
 			microphoneState = 'ready';
 			microphoneDetail = 'Permission granted. The setup check released the microphone.';
+			resetPreflight('Microphone ready. Complete the headphone check before policy preflight.');
 		} catch (error: unknown) {
 			microphoneState = 'blocked';
 			microphoneDetail =
@@ -138,6 +198,7 @@
 	function confirmAudioCheck(): void {
 		audioOutputState = 'ready';
 		audioOutputDetail = 'Operator confirmed Bulbul playback through wired headphones.';
+		resetPreflight('Browser audio is ready. Run policy preflight for the selected mock case.');
 	}
 
 	function stopAgentAudio(): void {
@@ -146,6 +207,85 @@
 		if (audioOutputState === 'playing' || audioOutputState === 'requesting') {
 			audioOutputState = 'idle';
 			audioOutputDetail = 'Playback stopped. Run the headphone check again.';
+		}
+	}
+
+	function chooseCase(event: Event): void {
+		selectedCaseId = (event.currentTarget as HTMLSelectElement).value;
+		resetPreflight('Case changed. Run policy preflight before Start is enabled.');
+	}
+
+	async function runPolicyPreflight(): Promise<void> {
+		if (!canRunPreflight) return;
+		preflightBusy = true;
+		preflightDetail = 'Checking backend, Sarvam configuration, eligibility, and contact cap.';
+
+		try {
+			const response = await fetch(API_ROUTES.preflight, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-Vachan-Microphone': 'granted',
+					'X-Vachan-Audio-Output': 'confirmed'
+				},
+				body: JSON.stringify({
+					api_version: PROTOCOL_VERSION,
+					case_id: selectedCaseId
+				})
+			});
+			if (!response.ok) throw new Error(`Preflight failed with HTTP ${response.status}.`);
+			const body = (await response.json()) as {
+				result: PreflightResult;
+				checks: PreflightCheck[];
+			};
+			preflightResult = body.result;
+			preflightChecks = body.checks;
+			preflightDetail =
+				body.result === 'READY'
+					? 'All checks passed. Start is enabled for this mock case.'
+					: body.result === 'BLOCKED_POLICY'
+						? 'Policy blocks Start. Priya cannot override this decision.'
+						: 'A technical check failed. Resolve it and rerun preflight.';
+		} catch (error: unknown) {
+			preflightResult = 'BLOCKED_TECHNICAL';
+			preflightDetail =
+				error instanceof Error ? error.message : 'Backend preflight is unavailable.';
+			preflightChecks = [
+				{
+					api_version: PROTOCOL_VERSION,
+					name: 'backend',
+					pass: false,
+					detail: 'Backend is unavailable; restart it and rerun preflight.'
+				}
+			];
+		} finally {
+			preflightBusy = false;
+		}
+	}
+
+	async function startCall(): Promise<void> {
+		if (!canStartCall) return;
+		preflightBusy = true;
+		await agentAudio.unlock();
+		try {
+			const response = await fetch(API_ROUTES.callStart, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					api_version: PROTOCOL_VERSION,
+					case_id: selectedCaseId
+				})
+			});
+			if (!response.ok) throw new Error(`Start was refused with HTTP ${response.status}.`);
+			const body = (await response.json()) as { call_id: string };
+			activeCallId = body.call_id;
+			preflightDetail = `Active mock call: ${body.call_id}`;
+		} catch (error: unknown) {
+			preflightResult = 'BLOCKED_POLICY';
+			preflightDetail =
+				error instanceof Error ? error.message : 'Start was refused; rerun preflight.';
+		} finally {
+			preflightBusy = false;
 		}
 	}
 
@@ -186,6 +326,10 @@
 		stopReplay?.();
 		audioCheckAbort?.abort();
 		void agentAudio.close();
+	});
+
+	onMount(() => {
+		void loadCases();
 	});
 </script>
 
@@ -240,6 +384,38 @@
 			</div>
 
 			<div class="check-row">
+				<label>
+					<p class="check-name">Mock case</p>
+					<select value={selectedCaseId} onchange={chooseCase} disabled={preflightBusy || !!activeCallId}>
+						{#each cases as demoCase (demoCase.case_id)}
+							<option value={demoCase.case_id}>
+								{demoCase.borrower_display_name} · cap {demoCase.contact_cap_remaining}
+							</option>
+						{/each}
+					</select>
+				</label>
+				<span
+					class:ready={preflightResult === 'READY'}
+					class:blocked={preflightResult === 'BLOCKED_POLICY' || preflightResult === 'BLOCKED_TECHNICAL'}
+				>
+					{preflightResult}
+				</span>
+			</div>
+
+			<p class="check-detail" role="status" aria-live="polite">{preflightDetail}</p>
+			{#if preflightChecks.length}
+				<ul>
+					{#each preflightChecks as check (check.name)}
+						<li>
+							<code>{check.pass ? 'PASS' : 'BLOCK'}</code>
+							<span>{check.name}</span>
+							<small>{check.detail}</small>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			<div class="check-row">
 				<div>
 					<p class="check-name">Bulbul headphone output</p>
 					<p class="check-detail" role="status" aria-live="polite">{audioOutputDetail}</p>
@@ -278,6 +454,12 @@
 				{#if audioOutputState === 'requesting' || audioOutputState === 'playing'}
 					<button type="button" onclick={stopAgentAudio}>Stop audio</button>
 				{/if}
+				<button type="button" onclick={runPolicyPreflight} disabled={!canRunPreflight}>
+					{preflightBusy ? 'Checking policy' : 'Run policy preflight'}
+				</button>
+				<button type="button" onclick={startCall} disabled={!canStartCall}>
+					{activeCallId ? 'Call active' : 'Start mock call'}
+				</button>
 			</div>
 		</aside>
 	</section>

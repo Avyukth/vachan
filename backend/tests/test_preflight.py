@@ -140,6 +140,8 @@ def preflight_client() -> TestClient:
     application = FastAPI()
     application.state.evidence_ledger = ledger
     application.state.sarvam_api_key = "test-only-non-secret"
+    application.state.call_session_registrar = lambda call_id: None
+    application.state.call_session_discard = lambda call_id: None
     application.include_router(router)
     with TestClient(application) as client:
         yield client
@@ -227,6 +229,59 @@ def test_ready_preflight_allows_one_start_and_database_rejects_double_start(
     assert second_start.status_code == 409
     ledger = preflight_client.app.state.evidence_ledger
     assert ledger.connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 1
+
+
+def test_call_start_rolls_back_row_when_lifecycle_registration_fails(
+    preflight_client: TestClient,
+) -> None:
+    discarded: list[str] = []
+
+    def fail_registration(call_id: str) -> None:
+        raise RuntimeError(f"cannot register {call_id}")
+
+    preflight_client.app.state.call_session_registrar = fail_registration
+    preflight_client.app.state.call_session_discard = discarded.append
+    preflight = preflight_client.post(
+        "/api/preflight",
+        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+        headers=preflight_headers(),
+    )
+    response = preflight_client.post(
+        "/api/call/start",
+        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+    )
+
+    assert preflight.json()["result"] == PreflightResult.READY
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Call setup failed; no active call was created.",
+    }
+    assert len(discarded) == 1
+    ledger = preflight_client.app.state.evidence_ledger
+    assert ledger.connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+
+
+def test_call_start_fails_before_insert_when_lifecycle_is_unavailable(
+    preflight_client: TestClient,
+) -> None:
+    preflight_client.app.state.call_session_registrar = None
+    preflight = preflight_client.post(
+        "/api/preflight",
+        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+        headers=preflight_headers(),
+    )
+    response = preflight_client.post(
+        "/api/call/start",
+        json={"api_version": PROTOCOL_VERSION, "case_id": "case-rakesh-001"},
+    )
+
+    assert preflight.json()["result"] == PreflightResult.READY
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Call lifecycle is unavailable; no active call was created.",
+    }
+    ledger = preflight_client.app.state.evidence_ledger
+    assert ledger.connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
 
 
 def test_cases_endpoint_omits_private_account_and_verification_fields(

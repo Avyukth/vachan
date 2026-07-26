@@ -27,6 +27,8 @@ def reset_app() -> tuple[FastAPI, EvidenceLedger]:
     application = FastAPI()
     application.state.evidence_ledger = ledger
     application.state.sarvam_api_key = "configured-in-test"
+    application.state.call_session_registrar = lambda call_id: None
+    application.state.call_session_discard = lambda call_id: None
     application.include_router(preflight_router)
     application.include_router(reset_router)
     return application, ledger

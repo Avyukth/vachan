@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -32,6 +34,7 @@ CONTACT_CAP_POLICY_DETAIL = (
 )
 
 router = APIRouter(tags=["calls"])
+CallSessionCallback = Callable[[str], object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +124,14 @@ def _ledger_for(request: Request) -> EvidenceLedger:
             reset_and_reseed_demo_cases(ledger)
         request.app.state.evidence_ledger = ledger
     return ledger
+
+
+def _call_session_callback(
+    request: Request,
+    name: str,
+) -> CallSessionCallback | None:
+    callback = getattr(request.app.state, name, None)
+    return callback if callable(callback) else None
 
 
 def _ready_case_ids(request: Request) -> set[str]:
@@ -240,9 +251,19 @@ async def start_call(payload: StartCallRequest, request: Request) -> StartCallRe
             detail="Preflight is no longer READY; rerun it before starting.",
         )
 
+    registrar = _call_session_callback(request, "call_session_registrar")
+    if registrar is None:
+        ready_case_ids.discard(payload.case_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Call lifecycle is unavailable; no active call was created.",
+        )
+
     call_id = f"call-{uuid4()}"
+    connection = _ledger_for(request).connection
+    connection.execute("BEGIN IMMEDIATE")
     try:
-        _ledger_for(request).connection.execute(
+        connection.execute(
             """
             INSERT INTO calls (id, case_id, started, transport)
             VALUES (?, ?, ?, ?)
@@ -255,11 +276,28 @@ async def start_call(payload: StartCallRequest, request: Request) -> StartCallRe
             ),
         )
     except sqlite3.IntegrityError as error:
+        connection.execute("ROLLBACK")
         ready_case_ids.discard(payload.case_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An active call already exists for this case.",
         ) from error
+
+    try:
+        registrar(call_id)
+    except Exception as error:
+        connection.execute("ROLLBACK")
+        discard = _call_session_callback(request, "call_session_discard")
+        if discard is not None:
+            with suppress(Exception):
+                discard(call_id)
+        ready_case_ids.discard(payload.case_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Call setup failed; no active call was created.",
+        ) from error
+    else:
+        connection.execute("COMMIT")
 
     ready_case_ids.discard(payload.case_id)
     return StartCallResponse(call_id=call_id)

@@ -289,6 +289,92 @@ def test_concurrent_event_writes_have_no_gaps_or_duplicates(
     assert [row["seq"] for row in rows] == list(range(1, 21))
 
 
+def test_operator_ending_atomically_persists_final_evidence_and_disposition(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    ended = StateSnapshot(
+        call=CallState.ENDED,
+        identity=IdentityState.UNVERIFIED,
+        promise=PromiseState.NONE,
+    )
+
+    seq = asyncio.run(
+        ledger.set_ended_operator(
+            call_id="call-001",
+            ts=NOW + timedelta(minutes=1),
+            reason="Operator completed the conversation",
+            state=ended,
+        )
+    )
+
+    assert seq == 1
+    call = connection.execute(
+        """
+        SELECT ended, disposition, operator_intervened
+        FROM calls WHERE id = ?
+        """,
+        ("call-001",),
+    ).fetchone()
+    assert dict(call) == {
+        "ended": (NOW + timedelta(minutes=1)).isoformat(),
+        "disposition": Disposition.ENDED_OPERATOR.value,
+        "operator_intervened": 1,
+    }
+    event = connection.execute(
+        """
+        SELECT seq, type, state_before, state_after, redacted_reason
+        FROM events WHERE call_id = ?
+        """,
+        ("call-001",),
+    ).fetchone()
+    assert event["seq"] == 1
+    assert event["type"] == LedgerEventType.DISPOSITION_SET.value
+    assert event["state_before"] == event["state_after"]
+    assert event["redacted_reason"] == "operator_end:Operator completed the conversation"
+
+
+def test_duplicate_operator_ending_adds_no_second_event(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    ended = StateSnapshot(
+        call=CallState.ENDED,
+        identity=IdentityState.UNVERIFIED,
+        promise=PromiseState.NONE,
+    )
+    asyncio.run(
+        ledger.set_ended_operator(
+            call_id="call-001",
+            ts=NOW,
+            reason="Operator completed the conversation",
+            state=ended,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="terminal disposition"):
+        asyncio.run(
+            ledger.set_ended_operator(
+                call_id="call-001",
+                ts=NOW + timedelta(seconds=1),
+                reason="Duplicate ending",
+                state=ended,
+            )
+        )
+
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM events WHERE call_id = ?",
+            ("call-001",),
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def test_tool_decision_and_event_are_inserted_atomically(
     connection: sqlite3.Connection,
     ledger: EvidenceLedger,

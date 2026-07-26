@@ -306,6 +306,60 @@ class EvidenceLedger:
                 )
         return seq
 
+    async def set_ended_operator(
+        self,
+        *,
+        call_id: str,
+        ts: datetime,
+        reason: str,
+        state: StateSnapshot,
+    ) -> int:
+        """Atomically persist the operator disposition and its final evidence."""
+
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValueError("operator end reason must not be empty")
+        if state.call.value != "ENDED":
+            raise ValueError("operator end state must be ENDED")
+
+        async with self._write_lock:
+            with _immediate_transaction(self.connection):
+                call = self.connection.execute(
+                    "SELECT disposition FROM calls WHERE id = ?",
+                    (call_id,),
+                ).fetchone()
+                if call is None:
+                    raise LookupError("active call does not exist")
+                if call["disposition"] is not None:
+                    raise RuntimeError("call already has a terminal disposition")
+
+                seq = _next_event_sequence(self.connection, call_id)
+                _insert_event_row(
+                    self.connection,
+                    call_id=call_id,
+                    seq=seq,
+                    ts=ts,
+                    event_type=LedgerEventType.DISPOSITION_SET.value,
+                    state_before=state,
+                    state_after=state,
+                    redacted_reason=f"operator_end:{normalized_reason}",
+                )
+                updated = self.connection.execute(
+                    """
+                    UPDATE calls
+                    SET ended = ?, disposition = ?, operator_intervened = 1
+                    WHERE id = ? AND disposition IS NULL
+                    """,
+                    (
+                        _iso_timestamp(ts),
+                        Disposition.ENDED_OPERATOR.value,
+                        call_id,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("operator ending lost its active-call race")
+        return seq
+
     async def append_tool_decision(
         self,
         *,

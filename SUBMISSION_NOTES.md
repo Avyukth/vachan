@@ -84,9 +84,6 @@ limitation only after its named bead is closed with an exact record of what was 
 - `sarvam-jg9`: the operator console's replay is explicitly labeled, but the live SQLite-backed
   `/api/evidence/{call_id}` journey is not yet mounted. Do not describe replay data or locally
   appended UI events as a live ledger stream.
-- `sarvam-v2v`: a backend restart can leave a durable active call without its in-memory lifecycle
-  registry, blocking preflight, reset, end, and takeover until that orphan is reconciled as
-  `ENDED_TECHNICAL`. Do not present restart recovery as complete until this P0 bead closes.
 - `sarvam-vmo.1`: evidence rows reject ordinary update/delete operations and sanctioned reset is
   scoped and audited in normal operation, but trusted same-process code holding the raw SQLite
   connection can mutate the ledger object's private reset flag. No public UI or API exposes that

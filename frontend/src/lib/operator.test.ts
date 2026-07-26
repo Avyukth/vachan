@@ -257,4 +257,31 @@ describe('ledger-derived operator view', () => {
 			)
 		).toBe(true);
 	});
+
+	test('runs backend preflight for denied or revoked browser permission', () => {
+		expect(operatorPageSource).toContain(
+			"let canRunPreflight = $derived(\n\t\tselectedCaseId.length > 0"
+		);
+		expect(operatorPageSource).toContain('await currentMicrophoneAttestation()');
+		expect(operatorPageSource).toContain(
+			"'X-Vachan-Microphone': microphoneAttestation"
+		);
+		expect(operatorPageSource.includes("'X-Vachan-Microphone': 'granted'")).toBe(false);
+		expect(operatorPageSource).toContain("permission.state !== 'granted'");
+	});
+
+	test('presents policy blocks as designed decisions with one primary setup action', () => {
+		expect(operatorPageSource).toContain(
+			"class:policy-block={preflightResult === 'BLOCKED_POLICY'}"
+		);
+		expect(operatorPageSource).toContain('Priya cannot override this decision.');
+		expect(operatorPageSource).toContain('title={canStartCall');
+		expect(
+			/\.setup-actions\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*gap:\s*0\.5rem;/s.test(
+				appCssSource
+			)
+		).toBe(true);
+		expect(operatorPageSource.match(/class="start-button"/g)).toHaveLength(1);
+		expect((operatorPageSource.match(/class="secondary-button"/g)?.length ?? 0) >= 4).toBe(true);
+	});
 });

@@ -102,15 +102,25 @@
 		return 'idle';
 	});
 	let canRunPreflight = $derived(
-		microphoneState === 'ready' &&
-			audioOutputState === 'ready' &&
-			selectedCaseId.length > 0 &&
-			!preflightBusy &&
-			!activeCallId
+		selectedCaseId.length > 0 && !preflightBusy && !activeCallId
 	);
 	let canStartCall = $derived(
 		preflightResult === 'READY' && selectedCaseId.length > 0 && !preflightBusy && !activeCallId
 	);
+	let orderedPreflightChecks = $derived(
+		[...preflightChecks].sort((left, right) => Number(left.pass) - Number(right.pass))
+	);
+	let startDisabledReason = $derived.by(() => {
+		if (activeCallId) return 'A mock call is already active.';
+		if (preflightBusy) return 'Wait for the current preflight action to finish.';
+		if (preflightResult === 'BLOCKED_POLICY') {
+			return 'Start is disabled by policy. Priya cannot override this decision.';
+		}
+		if (preflightResult === 'BLOCKED_TECHNICAL') {
+			return 'Start is disabled until the named technical check is resolved.';
+		}
+		return 'Run preflight and resolve every named check before Start is enabled.';
+	});
 
 	function resetPreflight(message: string): void {
 		preflightResult = 'NOT_RUN';
@@ -180,7 +190,32 @@
 				error instanceof DOMException && error.name === 'NotAllowedError'
 					? 'Permission was denied. Allow microphone access in browser settings, then check again.'
 					: 'The microphone could not be opened. Check the selected input device and retry.';
+			resetPreflight('Microphone is not granted. Run preflight to see the named technical block.');
 		}
+	}
+
+	async function currentMicrophoneAttestation(): Promise<string> {
+		if (navigator.permissions?.query) {
+			try {
+				const permission = await navigator.permissions.query({
+					name: 'microphone' as PermissionName
+				});
+				if (permission.state !== 'granted') {
+					microphoneState = permission.state === 'denied' ? 'blocked' : 'idle';
+					microphoneDetail =
+						permission.state === 'denied'
+							? 'Permission is denied in browser settings.'
+							: 'Permission is no longer granted. Request microphone access again.';
+				}
+				return permission.state;
+			} catch {
+				// Some browsers expose getUserMedia without the microphone
+				// permission descriptor. Fall back to the latest direct check.
+			}
+		}
+		if (microphoneState === 'ready') return 'granted';
+		if (microphoneState === 'blocked') return 'denied';
+		return 'not_granted';
 	}
 
 	async function playAudioCheck(): Promise<void> {
@@ -313,12 +348,14 @@
 		preflightDetail = 'Checking backend, Sarvam configuration, eligibility, and contact cap.';
 
 		try {
+			const microphoneAttestation = await currentMicrophoneAttestation();
 			const response = await fetch(API_ROUTES.preflight, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'X-Vachan-Microphone': 'granted',
-					'X-Vachan-Audio-Output': 'confirmed'
+					'X-Vachan-Microphone': microphoneAttestation,
+					'X-Vachan-Audio-Output':
+						audioOutputState === 'ready' ? 'confirmed' : 'unconfirmed'
 				},
 				body: JSON.stringify({
 					api_version: PROTOCOL_VERSION,
@@ -357,6 +394,10 @@
 
 	async function startCall(): Promise<void> {
 		if (!canStartCall) return;
+		if ((await currentMicrophoneAttestation()) !== 'granted') {
+			await runPolicyPreflight();
+			return;
+		}
 		preflightBusy = true;
 		await agentAudio.unlock();
 		try {
@@ -637,18 +678,25 @@
 				</span>
 			</div>
 
-			<p class="check-detail" role="status" aria-live="polite">{preflightDetail}</p>
-			{#if preflightChecks.length}
-				<ul>
-					{#each preflightChecks as check (check.name)}
-						<li>
-							<code>{check.pass ? 'PASS' : 'BLOCK'}</code>
-							<span>{check.name}</span>
-							<small>{check.detail}</small>
-						</li>
-					{/each}
-				</ul>
-			{/if}
+			<div
+				id="preflight-decision"
+				class="preflight-decision"
+				class:policy-block={preflightResult === 'BLOCKED_POLICY'}
+				class:technical-block={preflightResult === 'BLOCKED_TECHNICAL'}
+			>
+				<p class="check-detail" role="status" aria-live="polite">{preflightDetail}</p>
+				{#if orderedPreflightChecks.length}
+					<ul>
+						{#each orderedPreflightChecks as check (check.name)}
+							<li class:failed-check={!check.pass}>
+								<code>{check.pass ? 'PASS' : 'BLOCK'}</code>
+								<span>{check.name.replaceAll('_', ' ')}</span>
+								<small>{check.detail}</small>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
 
 			<div class="check-row">
 				<div>
@@ -668,9 +716,10 @@
 				Unplugged headphones are a documented known-bad configuration, not a supported demo mode.
 			</p>
 
-			<div class="replay-controls">
+			<div class="setup-actions">
 				<button
 					type="button"
+					class="secondary-button"
 					onclick={requestMicrophone}
 					disabled={microphoneState === 'requesting'}
 				>
@@ -678,21 +727,38 @@
 				</button>
 				<button
 					type="button"
+					class="secondary-button"
 					onclick={playAudioCheck}
 					disabled={audioOutputState === 'requesting' || audioOutputState === 'playing'}
 				>
 					Play Bulbul check
 				</button>
 				{#if audioOutputState === 'confirming'}
-					<button type="button" onclick={confirmAudioCheck}>I hear Bulbul</button>
+					<button type="button" class="secondary-button" onclick={confirmAudioCheck}>
+						I hear Bulbul
+					</button>
 				{/if}
 				{#if audioOutputState === 'requesting' || audioOutputState === 'playing'}
-					<button type="button" onclick={stopAgentAudio}>Stop audio</button>
+					<button type="button" class="secondary-button" onclick={stopAgentAudio}>
+						Stop audio
+					</button>
 				{/if}
-				<button type="button" onclick={runPolicyPreflight} disabled={!canRunPreflight}>
+				<button
+					type="button"
+					class="secondary-button"
+					onclick={runPolicyPreflight}
+					disabled={!canRunPreflight}
+				>
 					{preflightBusy ? 'Checking policy' : 'Run policy preflight'}
 				</button>
-				<button type="button" onclick={startCall} disabled={!canStartCall}>
+				<button
+					type="button"
+					class="start-button"
+					onclick={startCall}
+					disabled={!canStartCall}
+					aria-describedby="preflight-decision"
+					title={canStartCall ? 'Start the supervised mock call.' : startDisabledReason}
+				>
 					{activeCallId ? 'Call active' : 'Start mock call'}
 				</button>
 			</div>

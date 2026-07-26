@@ -512,13 +512,21 @@ def collect_verification_attempt(
     collected = PendingVerificationAttempt(
         birth_day_month_passed=(
             pending.birth_day_month_passed
-            if normalized_birth is None
-            else normalized_birth == (expected.birth_day, expected.birth_month)
+            if pending.birth_day_month_passed is not None
+            else (
+                None
+                if normalized_birth is None
+                else normalized_birth == (expected.birth_day, expected.birth_month)
+            )
         ),
         reference_last4_passed=(
             pending.reference_last4_passed
-            if normalized_reference is None
-            else normalized_reference == _normalized_expected_reference(expected)
+            if pending.reference_last4_passed is not None
+            else (
+                None
+                if normalized_reference is None
+                else normalized_reference == _normalized_expected_reference(expected)
+            )
         ),
     )
     if not collected.complete:

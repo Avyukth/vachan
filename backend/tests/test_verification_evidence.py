@@ -430,6 +430,62 @@ def test_controller_evidence_failure_keeps_session_locked_and_retryable(
     assert (len(fake.stt_requests), len(fake.chat_requests), len(fake.tts_requests)) == (3, 3, 2)
 
 
+def test_controller_repeated_partial_guess_cannot_confirm_first_attempt(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        name="verification-repeated-partial",
+        turns=(
+            ("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+            ("पंद्रह मार्च", {"intent": "verification_response"}),
+            ("चौदह सितंबर", {"intent": "verification_response"}),
+            ("चार सात दो नौ", {"intent": "verification_response"}),
+        ),
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        for _ in range(4):
+            await controller.run_turn()
+
+        assert controller.verification == VerificationSession(
+            attempts=1,
+            status=VerificationStatus.PENDING,
+        )
+        assert controller.snapshot.identity is IdentityState.VERIFYING
+        with pytest.raises(ToolPermissionDenied):
+            await controller.read_mock_account()
+
+    asyncio.run(exercise())
+
+    assert VerificationEvidenceRepository(controller.ledger).attempts_for_call(
+        controller.call_id
+    ) == (_attempt(1, birth_passed=False, reference_passed=True),)
+    safe_surfaces = repr(
+        {
+            "events": [
+                tuple(row)
+                for row in db_connection.execute(
+                    """
+                    SELECT type, redacted_reason
+                    FROM events
+                    WHERE call_id = ?
+                    ORDER BY seq
+                    """,
+                    (controller.call_id,),
+                ).fetchall()
+            ],
+            "model_requests": fake.chat_requests,
+        }
+    )
+    for forbidden in ("4729", "पंद्रह", "मार्च", "चौदह", "सितंबर"):
+        assert forbidden not in safe_surfaces
+    fake.assert_consumed()
+
+
 def test_same_call_restart_reconstructs_only_durable_attempts(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,

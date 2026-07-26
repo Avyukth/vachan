@@ -16,12 +16,16 @@ from app.verification import (
     MAX_VERIFICATION_ATTEMPTS,
     VERIFICATION_MODEL_PAYLOADS,
     ExpectedVerification,
+    FieldCheck,
     IncompleteVerificationSubmission,
     PendingVerificationAttempt,
+    VerificationAttemptEvidence,
     VerificationClosedError,
+    VerificationField,
     VerificationSession,
     VerificationStatus,
     VerificationSubmission,
+    collect_verification_attempt,
     normalize_birth_day_month,
     normalize_reference_last4,
     submit_verification,
@@ -122,6 +126,78 @@ def test_partial_submission_is_not_a_complete_attempt() -> None:
 
     assert VerificationSession().attempts == 0
     assert PendingVerificationAttempt().complete is False
+
+
+def test_repeated_partial_cannot_overwrite_first_field_result() -> None:
+    session = VerificationSession()
+    pending = collect_verification_attempt(
+        session,
+        PendingVerificationAttempt(),
+        VerificationSubmission("पंद्रह मार्च", "not provided"),
+        EXPECTED,
+    )
+    assert pending == PendingVerificationAttempt(birth_day_month_passed=False)
+
+    repeated = collect_verification_attempt(
+        session,
+        pending,
+        VerificationSubmission("चौदह सितंबर", "not provided"),
+        EXPECTED,
+    )
+    assert repeated == pending
+
+    completed = collect_verification_attempt(
+        session,
+        repeated,
+        VerificationSubmission("not provided", "चार सात दो नौ"),
+        EXPECTED,
+    )
+    assert not isinstance(completed, PendingVerificationAttempt)
+    assert completed.session == VerificationSession(1, VerificationStatus.PENDING)
+    assert completed.evidence == VerificationAttemptEvidence(
+        attempt=1,
+        checks=(
+            FieldCheck(VerificationField.BIRTH_DAY_MONTH, False),
+            FieldCheck(VerificationField.REFERENCE_LAST4, True),
+        ),
+        passed=False,
+    )
+
+
+def test_repeated_reference_guess_cannot_overwrite_first_field_result() -> None:
+    session = VerificationSession()
+    pending = collect_verification_attempt(
+        session,
+        PendingVerificationAttempt(),
+        VerificationSubmission("not provided", "0000"),
+        EXPECTED,
+    )
+    assert pending == PendingVerificationAttempt(reference_last4_passed=False)
+
+    repeated = collect_verification_attempt(
+        session,
+        pending,
+        VerificationSubmission("not provided", "चार सात दो नौ"),
+        EXPECTED,
+    )
+    assert repeated == pending
+
+    completed = collect_verification_attempt(
+        session,
+        repeated,
+        VerificationSubmission("चौदह सितंबर", "not provided"),
+        EXPECTED,
+    )
+    assert not isinstance(completed, PendingVerificationAttempt)
+    assert completed.session == VerificationSession(1, VerificationStatus.PENDING)
+    assert completed.evidence == VerificationAttemptEvidence(
+        attempt=1,
+        checks=(
+            FieldCheck(VerificationField.BIRTH_DAY_MONTH, True),
+            FieldCheck(VerificationField.REFERENCE_LAST4, False),
+        ),
+        passed=False,
+    )
 
 
 def test_two_wrong_attempts_fail_with_fixed_content_free_close() -> None:

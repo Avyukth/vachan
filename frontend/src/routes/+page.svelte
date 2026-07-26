@@ -2,13 +2,13 @@
 	import { onDestroy, onMount } from 'svelte';
 
 	import { AgentAudioPlayback, fetchAudioCheck } from '$lib/audio';
+	import OperatorConsole from '$lib/components/OperatorConsole.svelte';
+	import type { OperatorConnectionState } from '$lib/operator';
 	import { connectReplay, type ReplayFixture } from '$lib/replay';
 	import {
 		API_ROUTES,
 		PROTOCOL_VERSION,
 		type CaseSummary,
-		type EventType,
-		type JsonValue,
 		type PreflightCheck,
 		type PreflightResult,
 		type ServerEvent
@@ -23,6 +23,9 @@
 		| 'ready'
 		| 'blocked';
 	type ReplayState = 'idle' | 'connecting' | 'playing' | 'complete' | 'error';
+	type ResetState = 'idle' | 'confirming' | 'running' | 'success' | 'error';
+
+	const RESET_CONFIRMATION = 'RESET DEMO / MOCK DATA';
 
 	let microphoneState = $state<MicrophoneState>('idle');
 	let microphoneDetail = $state('Permission has not been requested on this browser.');
@@ -40,6 +43,10 @@
 	let replayDetail = $state('Backend replay is available only with DEV_REPLAY=1.');
 	let replayLabel = $state('');
 	let replayEvents = $state<ServerEvent[]>([]);
+	let resetState = $state<ResetState>('idle');
+	let resetDetail = $state(
+		'Reset is available only outside an active call and affects governed demo rows only.'
+	);
 	let stopReplay: (() => void) | undefined;
 	let audioCheckAbort: AbortController | undefined;
 	const agentAudio = new AgentAudioPlayback();
@@ -69,27 +76,13 @@
 		blocked: 'BLOCKED'
 	};
 
-	function payloadString(event: ServerEvent | undefined, key: string): string | undefined {
-		const value: JsonValue | undefined = event?.payload[key];
-		return typeof value === 'string' ? value : undefined;
-	}
-
-	function latestEvent(events: ServerEvent[], type: EventType): ServerEvent | undefined {
-		return events.findLast((event) => event.type === type);
-	}
-
-	function machineState(events: ServerEvent[], machine: string): string | undefined {
-		const transition = events.findLast(
-			(event) => event.type === 'state_change' && event.payload.machine === machine
-		);
-		return payloadString(transition, 'after');
-	}
-
-	let latestUtterance = $derived(latestEvent(replayEvents, 'utterance'));
-	let latestToolDecision = $derived(latestEvent(replayEvents, 'tool_decision'));
-	let identityState = $derived(machineState(replayEvents, 'identity'));
-	let promiseState = $derived(machineState(replayEvents, 'promise'));
-	let disposition = $derived(payloadString(latestEvent(replayEvents, 'disposition'), 'disposition'));
+	let operatorConnectionState = $derived.by<OperatorConnectionState>(() => {
+		if (replayState === 'connecting') return 'connecting';
+		if (replayState === 'playing') return 'live';
+		if (replayState === 'complete') return 'complete';
+		if (replayState === 'error') return 'degraded';
+		return activeCallId ? 'connecting' : 'idle';
+	});
 	let canRunPreflight = $derived(
 		microphoneState === 'ready' &&
 			audioOutputState === 'ready' &&
@@ -289,6 +282,89 @@
 		}
 	}
 
+	async function endOperatorCall(): Promise<void> {
+		if (!activeCallId) return;
+		stopAgentAudio();
+		await fetch(API_ROUTES.callEnd, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				api_version: PROTOCOL_VERSION,
+				call_id: activeCallId,
+				reason: 'operator_end'
+			})
+		});
+	}
+
+	async function takeoverOperatorCall(): Promise<void> {
+		if (!activeCallId) return;
+		stopAgentAudio();
+		await fetch(API_ROUTES.takeover, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				api_version: PROTOCOL_VERSION,
+				call_id: activeCallId
+			})
+		});
+	}
+
+	function requestDemoReset(): void {
+		if (activeCallId || resetState === 'running') return;
+		resetState = 'confirming';
+		resetDetail =
+			'This erases and reseeds DEMO / MOCK DATA calls and evidence, creates fresh call IDs, and re-anchors mock time. Non-demo rows are preserved.';
+	}
+
+	function cancelDemoReset(): void {
+		resetState = 'idle';
+		resetDetail =
+			'Reset cancelled. No demo calls, evidence, cases, or mock time anchors were changed.';
+	}
+
+	async function confirmDemoReset(): Promise<void> {
+		if (activeCallId || resetState !== 'confirming') return;
+		resetState = 'running';
+		resetDetail = 'Resetting governed demo rows and reseeding the fixed mock cases.';
+
+		try {
+			const response = await fetch(API_ROUTES.reset, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					api_version: PROTOCOL_VERSION,
+					confirmation: RESET_CONFIRMATION
+				})
+			});
+			const body = (await response.json()) as {
+				reset?: boolean;
+				seeded_case_count?: number;
+				detail?: string;
+			};
+			if (!response.ok) {
+				throw new Error(
+					body.detail ??
+						(response.status === 403
+							? 'Demo reset is unavailable during an active call. End the call safely first.'
+							: `Demo reset failed with HTTP ${response.status}.`)
+				);
+			}
+
+			stopReplay?.();
+			stopReplay = undefined;
+			replayEvents = [];
+			replayState = 'idle';
+			replayLabel = '';
+			resetPreflight('Demo data was reset. Rerun browser checks and policy preflight.');
+			await loadCases();
+			resetState = 'success';
+			resetDetail = `Reset complete. ${body.seeded_case_count ?? 0} governed mock cases were reseeded with fresh call IDs and anchored demo time.`;
+		} catch (error: unknown) {
+			resetState = 'error';
+			resetDetail = error instanceof Error ? error.message : 'Demo reset failed closed.';
+		}
+	}
+
 	async function startDevReplay(): Promise<void> {
 		stopReplay?.();
 		stopReplay = undefined;
@@ -461,6 +537,39 @@
 					{activeCallId ? 'Call active' : 'Start mock call'}
 				</button>
 			</div>
+
+			<div class="reset-control">
+				<div>
+					<p class="mono-label">DEMO RESET</p>
+					<p class="check-detail" role="status" aria-live="polite">{resetDetail}</p>
+				</div>
+				{#if resetState === 'confirming'}
+					<div class="reset-confirmation">
+						<strong>{RESET_CONFIRMATION}</strong>
+						<div>
+							<button type="button" class="secondary-button" onclick={cancelDemoReset}>
+								Cancel
+							</button>
+							<button type="button" class="danger-button" onclick={confirmDemoReset}>
+								Confirm demo reset
+							</button>
+						</div>
+					</div>
+				{:else}
+					<button
+						type="button"
+						class="secondary-button"
+						onclick={requestDemoReset}
+						disabled={!!activeCallId || resetState === 'running'}
+					>
+						{activeCallId
+							? 'Reset locked during call'
+							: resetState === 'running'
+								? 'Resetting demo data'
+								: 'Reset demo data'}
+					</button>
+				{/if}
+			</div>
 		</aside>
 	</section>
 
@@ -497,42 +606,16 @@
 				<span>{replayStateLabels[replayState]}</span>
 			</div>
 
-			<div class="replay-columns">
-				<article>
-					<p class="section-label">CALL</p>
-					<h3>Recorded utterance</h3>
-					<p>{payloadString(latestUtterance, 'text') || 'Waiting for a ledger event.'}</p>
-				</article>
-
-				<article>
-					<p class="section-label">WATCH</p>
-					<h3>Ledger-derived state</h3>
-					<dl>
-						<div><dt>IDENTITY</dt><dd>{identityState || '—'}</dd></div>
-						<div><dt>PROMISE</dt><dd>{promiseState || '—'}</dd></div>
-						<div>
-							<dt>LATEST TOOL</dt>
-							<dd>{payloadString(latestToolDecision, 'tool') || '—'}</dd>
-						</div>
-					</dl>
-				</article>
-
-				<article class="evidence-card">
-					<p class="section-label">EVIDENCE</p>
-					<h3>{disposition || `${replayEvents.length} ordered events`}</h3>
-					<ol>
-						{#each replayEvents as event (event.seq)}
-							<li class:blocked-event={event.type === 'guard_block' || (event.type === 'tool_decision' && event.payload.allowed === false)}>
-								<code>{String(event.seq).padStart(2, '0')}</code>
-								<span>{event.type}</span>
-								<small>{payloadString(event, 'reason') || payloadString(event, 'after') || payloadString(event, 'disposition') || ''}</small>
-							</li>
-						{/each}
-					</ol>
-				</article>
-			</div>
 		</section>
 	{/if}
+
+	<OperatorConsole
+		events={replayEvents}
+		connectionState={operatorConnectionState}
+		streamLabel={replayLabel || 'LEDGER EVENT STREAM'}
+		onEnd={activeCallId ? endOperatorCall : undefined}
+		onTakeover={activeCallId ? takeoverOperatorCall : undefined}
+	/>
 
 	<footer>
 		<p>LOCAL STAGE ORIGIN</p>

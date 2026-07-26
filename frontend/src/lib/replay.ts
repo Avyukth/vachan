@@ -81,6 +81,7 @@ export async function connectReplay(
 
 	socket.addEventListener('open', () => callbacks.onOpen(start.replay_label));
 	socket.addEventListener('message', (message) => {
+		if (completed) return;
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(String(message.data));
@@ -103,7 +104,7 @@ export async function connectReplay(
 	});
 	socket.addEventListener('error', () => callbacks.onError('Replay WebSocket failed.'));
 	socket.addEventListener('close', (closeEvent) => {
-		if (completed && closeEvent.code === 1000) {
+		if (completed) {
 			callbacks.onComplete();
 		} else if (closeEvent.code !== 1000) {
 			callbacks.onError('Replay ended before a disposition event.');

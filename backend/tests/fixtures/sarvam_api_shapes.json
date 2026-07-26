@@ -38,7 +38,7 @@
         "mode": "transcribe",
         "sample_rate": "16000",
         "input_audio_codec": "pcm_s16le",
-        "high_vad_sensitivity": true,
+        "high_vad_sensitivity": false,
         "vad_signals": true,
         "flush_signal": true
       }

@@ -55,7 +55,11 @@ async def open_sarvam_stream(api_key: str) -> AsyncIterator[SarvamStreamingSocke
         mode="transcribe",
         sample_rate=str(SAMPLE_RATE),
         input_audio_codec="pcm_s16le",
-        high_vad_sensitivity=True,
+        # The high preset finalizes after a clause-sized pause (~64 ms). That
+        # split a single Hindi promise before its amount and let the fragment
+        # trigger a controller turn. The normal ~1 s boundary preserves natural
+        # mid-sentence pauses while retaining server-owned endpointing.
+        high_vad_sensitivity=False,
         vad_signals=True,
         flush_signal=True,
     ) as stream:

@@ -1,0 +1,100 @@
+[
+  {
+    "delay_ms": 300,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 1,
+      "ts": "2026-07-26T12:20:00+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "call",
+        "before": "READY",
+        "after": "ACTIVE"
+      }
+    }
+  },
+  {
+    "delay_ms": 350,
+    "event": {
+      "api_version": "v0",
+      "type": "tool_decision",
+      "call_id": "fixture",
+      "seq": 2,
+      "ts": "2026-07-26T12:20:01+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "tool": "all_agent_tools",
+        "allowed": false,
+        "reason": "Operator takeover revoked tools before cancellation and TTS stop."
+      }
+    }
+  },
+  {
+    "delay_ms": 300,
+    "event": {
+      "api_version": "v0",
+      "type": "guard_block",
+      "call_id": "fixture",
+      "seq": 3,
+      "ts": "2026-07-26T12:20:02+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "category": "takeover_cancellation",
+        "reason": "Pending model and TTS work cancelled; no stale utterance may play."
+      }
+    }
+  },
+  {
+    "delay_ms": 400,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 4,
+      "ts": "2026-07-26T12:20:03+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "call",
+        "before": "ACTIVE",
+        "after": "OPERATOR_TAKEOVER"
+      }
+    }
+  },
+  {
+    "delay_ms": 350,
+    "event": {
+      "api_version": "v0",
+      "type": "utterance",
+      "call_id": "fixture",
+      "seq": 5,
+      "ts": "2026-07-26T12:20:04+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "speaker": "operator",
+        "text": "Operator has taken over. Agent speech remains stopped."
+      }
+    }
+  },
+  {
+    "delay_ms": 300,
+    "event": {
+      "api_version": "v0",
+      "type": "disposition",
+      "call_id": "fixture",
+      "seq": 6,
+      "ts": "2026-07-26T12:20:05+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "disposition": "ENDED_OPERATOR"
+      }
+    }
+  }
+]

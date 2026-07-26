@@ -1,0 +1,184 @@
+[
+  {
+    "delay_ms": 300,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 1,
+      "ts": "2026-07-26T12:00:00+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "call",
+        "before": "READY",
+        "after": "ACTIVE"
+      }
+    }
+  },
+  {
+    "delay_ms": 400,
+    "event": {
+      "api_version": "v0",
+      "type": "utterance",
+      "call_id": "fixture",
+      "seq": 2,
+      "ts": "2026-07-26T12:00:01+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "speaker": "agent",
+        "text": "Namaste. Main Vachan assistant bol rahi hoon. Main kabhi OTP ya UPI PIN nahi maangungi."
+      }
+    }
+  },
+  {
+    "delay_ms": 350,
+    "event": {
+      "api_version": "v0",
+      "type": "tool_decision",
+      "call_id": "fixture",
+      "seq": 3,
+      "ts": "2026-07-26T12:00:02+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "tool": "read_mock_account",
+        "allowed": false,
+        "reason": "Identity is not CONFIRMED."
+      }
+    }
+  },
+  {
+    "delay_ms": 300,
+    "event": {
+      "api_version": "v0",
+      "type": "guard_block",
+      "call_id": "fixture",
+      "seq": 4,
+      "ts": "2026-07-26T12:00:03+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "category": "account_disclosure",
+        "reason": "Draft discarded before TTS; body intentionally not stored."
+      }
+    }
+  },
+  {
+    "delay_ms": 500,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 5,
+      "ts": "2026-07-26T12:00:04+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "identity",
+        "before": "UNVERIFIED",
+        "after": "VERIFYING"
+      }
+    }
+  },
+  {
+    "delay_ms": 500,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 6,
+      "ts": "2026-07-26T12:00:05+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "identity",
+        "before": "VERIFYING",
+        "after": "CONFIRMED"
+      }
+    }
+  },
+  {
+    "delay_ms": 450,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 7,
+      "ts": "2026-07-26T12:00:06+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "promise",
+        "before": "NONE",
+        "after": "CANDIDATE"
+      }
+    }
+  },
+  {
+    "delay_ms": 450,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 8,
+      "ts": "2026-07-26T12:00:07+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "machine": "promise",
+        "before": "CANDIDATE",
+        "after": "READ_BACK"
+      }
+    }
+  },
+  {
+    "delay_ms": 500,
+    "event": {
+      "api_version": "v0",
+      "type": "utterance",
+      "call_id": "fixture",
+      "seq": 9,
+      "ts": "2026-07-26T12:00:08+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "speaker": "agent",
+        "text": "₹1,500 — ek hazaar paanch sau rupaye — Friday, 31 July 2026. Sahi hai?"
+      }
+    }
+  },
+  {
+    "delay_ms": 400,
+    "event": {
+      "api_version": "v0",
+      "type": "tool_decision",
+      "call_id": "fixture",
+      "seq": 10,
+      "ts": "2026-07-26T12:00:09+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "tool": "commit_promise",
+        "allowed": true,
+        "reason": "Identity confirmed; read-back and explicit affirmation recorded."
+      }
+    }
+  },
+  {
+    "delay_ms": 400,
+    "event": {
+      "api_version": "v0",
+      "type": "disposition",
+      "call_id": "fixture",
+      "seq": 11,
+      "ts": "2026-07-26T12:00:10+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
+        "disposition": "PROMISE_CONFIRMED"
+      }
+    }
+  }
+]

@@ -36,7 +36,7 @@ export default defineConfig({
 	webServer: [
 		{
 			command:
-				'uv --directory ../backend run uvicorn tests.evidence_e2e_server:app --host 127.0.0.1 --port 8019',
+				'DEV_REPLAY=0 uv --directory ../backend run uvicorn tests.evidence_e2e_server:app --host 127.0.0.1 --port 8019',
 			url: 'http://127.0.0.1:8019/api/cases',
 			reuseExistingServer: false,
 			timeout: 30_000

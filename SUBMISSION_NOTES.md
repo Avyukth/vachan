@@ -68,6 +68,10 @@ final artifact:
 - `sarvam-j8o.1` fixed the runner/count drift by keying the contract to stable case IDs and
   deriving artifact totals. The checked-in score still predates subsequent shared-tree changes;
   do not present it as current-build evidence until freeze-time regeneration.
+- The human ship-mode decision allows focused tests to land before the shared full suite is
+  revalidated. `sarvam-7m1` owns that deferred verification audit. Any coverage still verified
+  only by a focused file at submission time must be labeled as such rather than implied to have
+  passed the complete suite.
 - Until `sarvam-ee1.1` is closed with its production-boundary regressions passing, matrix rows
   11–13 overstate their boundary coverage: they simulate the STT failure, takeover, and capped-case
   outcomes below the actual public transport/route seams. If that bead remains open at freeze, the
@@ -75,17 +79,17 @@ final artifact:
 
 ## Current implementation limitations
 
-These are truthful for the working tree at the time this draft was created. Remove a limitation
-only after its named bead is closed and its acceptance tests pass.
+These are conservative claims for a concurrently changing working tree. Remove or narrow a
+limitation only after its named bead is closed with an exact record of what was tested.
 
 - `sarvam-jg9`: the operator console's replay is explicitly labeled, but the live SQLite-backed
   `/api/evidence/{call_id}` journey is not yet mounted. Do not describe replay data or locally
   appended UI events as a live ledger stream.
-- `sarvam-vmo.1`: append-only behavior is enforced by application APIs and only partially by the
-  current database schema. Direct SQL can still rewrite or erase some evidence/detail rows until
-  the storage-hardening fix lands.
-- `sarvam-bb8.1`: promise domain mutation and its append-only evidence are not yet one atomic
-  transaction at every step.
+- `sarvam-vmo.1`: storage hardening landed in `5e2daff` with focused DB/reset/promise evidence,
+  but its final shared-verification closeout is still pending. Until closure, describe append-only
+  enforcement as focused-test evidence rather than a complete-suite result.
+- `sarvam-bb8.1`: the atomic promise-evidence applier landed in `0f13db2`, while full acceptance
+  and closeout remain pending. Do not claim every promise transition is proven atomic yet.
 - `sarvam-bfo.1`: not every terminal disposition path is yet serialized through one atomic
   event-plus-call-row boundary.
 - `sarvam-y8r.1`: production verification evidence currently records overall pass/fail but does
@@ -129,6 +133,8 @@ Do not submit until each item has an owner and an explicit result:
 - [ ] Backend Ruff, format check, and full pytest suite pass from the frozen tree.
 - [ ] Frontend tests, Svelte check, and production build pass from the frozen tree.
 - [ ] The evidence runner is regenerated; its build identifier and timestamp match the frozen tree.
+- [ ] `sarvam-7m1` has reconciled ship-mode focused tests against the full suite, or every
+      still-unverified coverage claim is explicitly disclosed.
 - [ ] Every open fix-or-disclose bead above is either closed with passing tests or retained as a
       limitation.
 - [ ] `sarvam-ee1.1` is fixed, or the exact matrix-boundary caveat remains in the artifact caption.

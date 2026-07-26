@@ -719,14 +719,14 @@ class DialogueController:
             disposition=None,
         )
 
-    async def speak_reviewed(self, text: str) -> ControllerTurn:
+    async def speak_reviewed(self, template_id: TemplateId) -> ControllerTurn:
         """Guard and synthesize a fixed operational line without invoking the model."""
 
         if not self._started:
             raise RuntimeError("call must be started before speaking")
         if self.disposition is not None:
             raise ControllerClosedError("terminal call cannot speak")
-        speech, audio_response = await self._speak(text)
+        speech, audio_response = await self._speak(render_template(template_id))
         return ControllerTurn(
             transcript="",
             speech_text=speech,

@@ -23,6 +23,7 @@ class TemplateId(StrEnum):
     THIRD_PARTY_CALLBACK = "THIRD_PARTY_CALLBACK"
     TECH_DIFFICULTY_CLOSE = "TECH_DIFFICULTY_CLOSE"
     OUTPUT_GUARD_FALLBACK = "OUTPUT_GUARD_FALLBACK"
+    STT_RECOVERY = "STT_RECOVERY"
 
 
 TEMPLATE_BANK = MappingProxyType(
@@ -50,11 +51,19 @@ TEMPLATE_BANK = MappingProxyType(
         TemplateId.OUTPUT_GUARD_FALLBACK: (
             "माफ़ कीजिए, मैं वह बात सुरक्षित रूप से नहीं कह सकती। कृपया एक क्षण रुकिए।",
         ),
+        TemplateId.STT_RECOVERY: ("line kharab hai, dobara boliye",),
     }
 )
 
 BANK_MEMBERS = frozenset(
     text for template_variants in TEMPLATE_BANK.values() for text in template_variants
+)
+TEMPLATE_IDS_BY_TEXT = MappingProxyType(
+    {
+        text: template_id
+        for template_id, template_variants in TEMPLATE_BANK.items()
+        for text in template_variants
+    }
 )
 
 
@@ -71,17 +80,31 @@ class TemplateVariantError(ValueError):
     """Raised when code requests a non-existent reviewed phrasing."""
 
 
+class UnreviewedSpeechError(ValueError):
+    """Raised when operational speech is not an immutable registry member."""
+
+
 RawClassification = str | bytes | Mapping[str, Any] | PreConfirmationClassification
 
 
 def render_template(template_id: TemplateId, *, variant: int = 0) -> str:
     """Return one reviewed utterance; never interpolate model-authored prose."""
+    if not isinstance(template_id, TemplateId):
+        raise UnreviewedSpeechError("operational speech requires a typed TemplateId")
     variants = TEMPLATE_BANK[template_id]
     if variant < 0 or variant >= len(variants):
         raise TemplateVariantError(
             f"{template_id.value} has {len(variants)} reviewed variant(s), not variant {variant}"
         )
     return variants[variant]
+
+
+def template_id_for_reviewed_text(response: str) -> TemplateId:
+    """Resolve exact reviewed copy to its typed identifier or fail closed."""
+    try:
+        return TEMPLATE_IDS_BY_TEXT[response]
+    except KeyError as error:
+        raise UnreviewedSpeechError("operational speech is not reviewed registry copy") from error
 
 
 def select_preconfirmation_response(

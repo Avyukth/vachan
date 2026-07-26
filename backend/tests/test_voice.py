@@ -16,6 +16,7 @@ from app.llm import LLMUnavailable
 from app.protocol import TransportMode
 from app.seeds import RAKESH_CASE
 from app.states import IdentityState, PromiseState
+from app.templates import TemplateId, render_template
 from app.voice import ProductionBreakGlassTakeover, VoiceCallBinding
 from tests.fakes import SILENT_WAV
 
@@ -209,7 +210,10 @@ def test_voice_binding_drops_stale_transcript_after_call_ends(
     async def exercise() -> None:
         await binding.on_connected()
         await binding.next_client_event()
-        await binding.on_recovery_prompt(binding.call_id, "line kharab hai, dobara boliye")
+        await binding.on_recovery_prompt(
+            binding.call_id,
+            render_template(TemplateId.STT_RECOVERY),
+        )
         recovery = await binding.next_client_event()
         assert recovery["type"] == "agent_audio"
         assert recovery["kind"] == "recovery"
@@ -242,6 +246,72 @@ def test_voice_binding_drops_stale_transcript_after_call_ends(
         ).fetchone()[0]
         == 0
     )
+
+
+def test_recovery_prompt_allows_next_preconfirmation_turn(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    binding, dialogue = _existing_voice_call(
+        db_connection,
+        call_id="call-live-recovery-continues",
+        frozen_demo_clock=frozen_demo_clock,
+    )
+
+    async def exercise() -> None:
+        await binding.on_connected()
+        await binding.next_client_event()
+        await binding.on_recovery_prompt(
+            binding.call_id,
+            render_template(TemplateId.STT_RECOVERY),
+        )
+        recovery = await binding.next_client_event()
+        assert recovery["kind"] == "recovery"
+
+        await binding.on_final_transcript(binding.call_id, "Rakesh bol raha hoon")
+        next_turn = await binding.next_client_event()
+        assert next_turn["kind"] == "turn"
+        assert next_turn["transcript"] == "Rakesh bol raha hoon"
+
+    asyncio.run(exercise())
+
+    assert len(dialogue.chat_messages) == 1
+    assert dialogue.spoken == [
+        render_template(TemplateId.INTRO_ANTISCAM),
+        render_template(TemplateId.STT_RECOVERY),
+        render_template(TemplateId.VERIFY_REQUEST),
+    ]
+
+
+def test_unreviewed_recovery_fails_closed_before_tts(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    binding, dialogue = _existing_voice_call(
+        db_connection,
+        call_id="call-live-unreviewed-recovery",
+        frozen_demo_clock=frozen_demo_clock,
+    )
+
+    async def exercise() -> None:
+        await binding.on_connected()
+        await binding.next_client_event()
+        await binding.on_recovery_prompt(binding.call_id, "arbitrary operational prose")
+
+        assert await binding.next_client_event() == {
+            "type": "call_degraded",
+            "call_id": binding.call_id,
+            "reason": "backend_failure",
+        }
+
+    asyncio.run(exercise())
+
+    assert dialogue.spoken == [render_template(TemplateId.INTRO_ANTISCAM)]
+    disposition = db_connection.execute(
+        "SELECT disposition FROM calls WHERE id = ?",
+        (binding.call_id,),
+    ).fetchone()[0]
+    assert disposition == "ENDED_TECHNICAL"
 
 
 def test_voice_binding_drops_stale_transcript_after_synchronous_revocation(

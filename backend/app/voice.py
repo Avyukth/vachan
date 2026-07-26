@@ -23,6 +23,7 @@ from app.seeds import DEMO_CASES
 from app.states import CallState
 from app.stt import SttSessionRegistry
 from app.takeover import BreakGlassTakeover, TakeoverRegistry, TakeoverResult
+from app.templates import template_id_for_reviewed_text
 
 JsonObject = dict[str, Any]
 _CASES_BY_ID = {case.case_id: case for case in DEMO_CASES}
@@ -226,7 +227,8 @@ class VoiceCallBinding:
                 return
             started_at = time.perf_counter()
             try:
-                turn = await self.controller.speak_reviewed(line)
+                template_id = template_id_for_reviewed_text(line)
+                turn = await self.controller.speak_reviewed(template_id)
             except SarvamTextToSpeechError:
                 await self._end_technical_locked("tts_unavailable")
                 return

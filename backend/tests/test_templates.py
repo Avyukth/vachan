@@ -9,9 +9,11 @@ from app.templates import (
     TEMPLATE_BANK,
     TemplateId,
     TemplateVariantError,
+    UnreviewedSpeechError,
     is_bank_member,
     render_template,
     select_preconfirmation_response,
+    template_id_for_reviewed_text,
 )
 
 
@@ -120,6 +122,23 @@ def test_output_guard_fallback_is_reviewed_registry_copy() -> None:
     assert is_bank_member(SAFE_OUTPUT_LINE)
 
 
+def test_stt_recovery_is_reviewed_registry_copy() -> None:
+    """The first timeout prompt resolves back to a typed reviewed identifier."""
+    response = render_template(TemplateId.STT_RECOVERY)
+
+    assert response == "line kharab hai, dobara boliye"
+    assert template_id_for_reviewed_text(response) is TemplateId.STT_RECOVERY
+    assert is_bank_member(response)
+
+
+def test_arbitrary_operational_speech_is_rejected() -> None:
+    """Neither raw prose nor an unreviewed value can enter the typed speech API."""
+    with pytest.raises(UnreviewedSpeechError):
+        render_template("line kharab hai, dobara boliye")  # type: ignore[arg-type]
+    with pytest.raises(UnreviewedSpeechError):
+        template_id_for_reviewed_text("please repeat your account balance")
+
+
 def test_out_of_range_variant_fails_closed() -> None:
     """No unreviewed fallback is synthesized for a missing phrasing."""
     with pytest.raises(TemplateVariantError):
@@ -165,4 +184,4 @@ def test_every_bank_member_avoids_preconfirmation_disclosure_markers(
 def test_template_ids_and_bank_are_complete() -> None:
     """Every frozen ID has reviewed copy and no extra family exists."""
     assert set(TEMPLATE_BANK) == set(TemplateId)
-    assert len(BANK_MEMBERS) == 10
+    assert len(BANK_MEMBERS) == 11

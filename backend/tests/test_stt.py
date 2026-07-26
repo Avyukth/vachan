@@ -24,6 +24,7 @@ from app.stt import (
     SttOutcome,
     SttSessionRegistry,
     router,
+    stt_websocket,
 )
 from app.templates import TemplateId, is_bank_member, render_template
 
@@ -179,6 +180,41 @@ class WrongCallBrowserEventBinding(BrowserEventBinding):
                 speech_text="यह गलत कॉल का फ़्रेम है।",
             ).model_dump(mode="json")
         )
+
+
+@dataclass
+class ConnectRecordingBinding(RecordingBinding):
+    connected_count: int = 0
+
+    async def on_connected(self) -> None:
+        self.connected_count += 1
+
+
+@dataclass
+class DirectWebSocket:
+    app: FastAPI
+    accepted: bool = False
+    sent: list[dict[str, object]] = field(default_factory=list)
+    closed_code: int | None = None
+    hang_send: bool = False
+    send_started: asyncio.Event = field(default_factory=asyncio.Event)
+    send_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        if self.hang_send:
+            self.send_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.send_cancelled.set()
+                raise
+        self.sent.append(payload)
+
+    async def close(self, code: int) -> None:
+        self.closed_code = code
 
 
 def final_message(transcript: str) -> dict[str, Any]:
@@ -583,6 +619,147 @@ def test_registry_replacement_and_call_cancellation_are_immediate() -> None:
         assert registry.cancel_call("call-stt-001")
         assert not second.active
         assert not registry.cancel_call("call-stt-001")
+
+    asyncio.run(exercise())
+
+
+def test_takeover_cancels_hanging_stream_connect_before_registry_promotion() -> None:
+    async def exercise() -> None:
+        binding = ConnectRecordingBinding()
+        connect_started = asyncio.Event()
+        connect_cancelled = asyncio.Event()
+
+        @asynccontextmanager
+        async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+            assert api_key == "backend-only-key"
+            connect_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                connect_cancelled.set()
+                raise
+            yield FakeStream()
+
+        app = FastAPI()
+        app.state.sarvam_api_key = "backend-only-key"
+        app.state.sarvam_stream_factory = stream_factory
+        app.state.stt_call_binding_factory = lambda call_id: binding
+        app.state.stt_sessions = SttSessionRegistry()
+        websocket = DirectWebSocket(app)
+
+        handler = asyncio.create_task(stt_websocket(websocket, "call-stt-001"))
+        await connect_started.wait()
+        assert app.state.stt_sessions.cancel_call("call-stt-001")
+        await handler
+
+        assert websocket.accepted
+        assert connect_cancelled.is_set()
+        assert websocket.sent == []
+        assert binding.connected_count == 0
+        assert binding.degradations == []
+        assert not app.state.stt_sessions.cancel_call("call-stt-001")
+
+    asyncio.run(exercise())
+
+
+def test_delayed_connect_rechecks_authority_before_ready_or_connected_callback() -> None:
+    async def exercise() -> None:
+        binding = ConnectRecordingBinding()
+        connect_started = asyncio.Event()
+        cancellation_observed = asyncio.Event()
+
+        @asynccontextmanager
+        async def cancellation_hostile_factory(api_key: str) -> AsyncIterator[FakeStream]:
+            assert api_key == "backend-only-key"
+            connect_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Model a dependency that swallows cancellation and still returns
+                # a late socket. The handler's authority check must reject it.
+                cancellation_observed.set()
+            yield FakeStream()
+
+        app = FastAPI()
+        app.state.sarvam_api_key = "backend-only-key"
+        app.state.sarvam_stream_factory = cancellation_hostile_factory
+        app.state.stt_call_binding_factory = lambda call_id: binding
+        app.state.stt_sessions = SttSessionRegistry()
+        websocket = DirectWebSocket(app)
+
+        handler = asyncio.create_task(stt_websocket(websocket, "call-stt-001"))
+        await connect_started.wait()
+        binding.active_call.value = False
+        assert app.state.stt_sessions.cancel_call("call-stt-001")
+        await handler
+
+        assert cancellation_observed.is_set()
+        assert websocket.sent == []
+        assert binding.connected_count == 0
+        assert binding.degradations == []
+
+    asyncio.run(exercise())
+
+
+def test_takeover_cancels_handler_during_ready_send_before_connected_callback() -> None:
+    async def exercise() -> None:
+        binding = ConnectRecordingBinding()
+
+        @asynccontextmanager
+        async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+            yield FakeStream()
+
+        app = FastAPI()
+        app.state.sarvam_api_key = "backend-only-key"
+        app.state.sarvam_stream_factory = stream_factory
+        app.state.stt_call_binding_factory = lambda call_id: binding
+        app.state.stt_sessions = SttSessionRegistry()
+        websocket = DirectWebSocket(app, hang_send=True)
+
+        handler = asyncio.create_task(stt_websocket(websocket, "call-stt-001"))
+        await websocket.send_started.wait()
+        binding.active_call.value = False
+        assert app.state.stt_sessions.cancel_call("call-stt-001")
+        await handler
+
+        assert websocket.send_cancelled.is_set()
+        assert websocket.sent == []
+        assert binding.connected_count == 0
+        assert binding.degradations == []
+
+    asyncio.run(exercise())
+
+
+def test_hanging_stream_connect_has_bounded_technical_failure() -> None:
+    async def exercise() -> None:
+        binding = ConnectRecordingBinding()
+        connect_cancelled = asyncio.Event()
+
+        @asynccontextmanager
+        async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                connect_cancelled.set()
+                raise
+            yield FakeStream()
+
+        app = FastAPI()
+        app.state.sarvam_api_key = "backend-only-key"
+        app.state.sarvam_stream_factory = stream_factory
+        app.state.stt_call_binding_factory = lambda call_id: binding
+        app.state.stt_sessions = SttSessionRegistry()
+        app.state.stt_request_timeout_seconds = 0.005
+        websocket = DirectWebSocket(app)
+
+        await stt_websocket(websocket, "call-stt-001")
+
+        assert connect_cancelled.is_set()
+        assert websocket.sent == []
+        assert websocket.closed_code == 1011
+        assert binding.connected_count == 0
+        assert binding.degradations == [("call-stt-001", "stt_connect_timeout")]
+        assert not app.state.stt_sessions.cancel_call("call-stt-001")
 
     asyncio.run(exercise())
 

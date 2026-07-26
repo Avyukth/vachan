@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -501,6 +501,35 @@ class SttSessionRegistry:
 
     def __init__(self) -> None:
         self._sessions: dict[str, StreamingSttSession] = {}
+        self._connecting: dict[str, asyncio.Task[None]] = {}
+
+    def register_connect(self, call_id: str, task: asyncio.Task[None]) -> None:
+        """Own stream establishment before a session exists to be cancelled."""
+        prior_task = self._connecting.get(call_id)
+        if prior_task is not None and prior_task is not task:
+            prior_task.cancel()
+        prior_session = self._sessions.pop(call_id, None)
+        if prior_session is not None:
+            prior_session.cancel()
+        self._connecting[call_id] = task
+
+    def promote_connect(
+        self,
+        call_id: str,
+        task: asyncio.Task[None],
+        session: StreamingSttSession,
+    ) -> bool:
+        """Attach a session while retaining handler ownership through readiness."""
+        if self._connecting.get(call_id) is not task:
+            session.cancel()
+            return False
+        self.register(session)
+        return True
+
+    def discard_connect(self, call_id: str, task: asyncio.Task[None]) -> None:
+        """Remove only the exact handler that still owns stream establishment."""
+        if self._connecting.get(call_id) is task:
+            del self._connecting[call_id]
 
     def register(self, session: StreamingSttSession) -> None:
         """Install one session per call, cancelling any replaced transport."""
@@ -516,16 +545,22 @@ class SttSessionRegistry:
 
     def cancel_call(self, call_id: str) -> bool:
         """Cancel and remove a call synchronously; return whether it existed."""
+        connecting = self._connecting.pop(call_id, None)
         session = self._sessions.pop(call_id, None)
-        if session is None:
-            return False
-        session.cancel()
-        return True
+        if connecting is not None:
+            connecting.cancel()
+        if session is not None:
+            session.cancel()
+        return connecting is not None or session is not None
 
     def cancel_all(self) -> None:
         """Cancel every open stream during process shutdown."""
+        connecting = tuple(self._connecting.values())
         sessions = tuple(self._sessions.values())
+        self._connecting.clear()
         self._sessions.clear()
+        for task in connecting:
+            task.cancel()
         for session in sessions:
             session.cancel()
 
@@ -672,15 +707,38 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
     )
     registry = _session_registry(websocket)
     session: StreamingSttSession | None = None
+    handler_task = asyncio.current_task()
+    assert handler_task is not None
+    registry.register_connect(call_id, handler_task)
+    timeout_seconds = getattr(
+        websocket.app.state,
+        "stt_request_timeout_seconds",
+        STT_REQUEST_TIMEOUT_SECONDS,
+    )
     try:
-        async with stream_factory(api_key) as stream:
+        async with AsyncExitStack() as stack:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    stream = await stack.enter_async_context(stream_factory(api_key))
+            except TimeoutError:
+                if binding.is_call_active():
+                    await binding.on_degraded(call_id, "stt_connect_timeout")
+                with suppress(RuntimeError):
+                    await websocket.close(code=1011)
+                return
+            if not binding.is_call_active():
+                return
             session = StreamingSttSession(
                 call_id=call_id,
                 stream=stream,
                 callbacks=binding,
                 is_call_active=binding.is_call_active,
+                timeout_seconds=timeout_seconds,
             )
-            registry.register(session)
+            if not registry.promote_connect(call_id, handler_task, session):
+                return
+            if not session.active or not binding.is_call_active():
+                return
             await websocket.send_json(
                 VoiceReadyFrame(
                     call_id=call_id,
@@ -688,8 +746,11 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
                 ).model_dump(mode="json")
             )
             on_connected = getattr(binding, "on_connected", None)
-            if on_connected is not None:
+            if session.active and binding.is_call_active() and on_connected is not None:
                 await on_connected()
+            if not session.active or not binding.is_call_active():
+                return
+            registry.discard_connect(call_id, handler_task)
             await _relay_call_stream(websocket, session, binding)
     except (WebSocketDisconnect, asyncio.CancelledError):
         return
@@ -701,6 +762,7 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
         except RuntimeError:
             return
     finally:
+        registry.discard_connect(call_id, handler_task)
         if session is not None:
             session.cancel()
             registry.discard(session)

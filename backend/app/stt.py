@@ -20,9 +20,10 @@ from app.audio_spike import (
     open_sarvam_stream,
     response_payload,
 )
+from app.templates import TemplateId, render_template
 
 STT_REQUEST_TIMEOUT_SECONDS = 8.0
-STT_RECOVERY_LINE = "line kharab hai, dobara boliye"
+STT_RECOVERY_LINE = render_template(TemplateId.STT_RECOVERY)
 STT_WEBSOCKET_PATH = "/ws/call/{call_id}"
 
 router = APIRouter(tags=["speech-to-text"])

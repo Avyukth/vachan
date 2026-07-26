@@ -21,6 +21,7 @@ from app.stt import (
     SttSessionRegistry,
     router,
 )
+from app.templates import TemplateId, is_bank_member, render_template
 
 
 class FakeStream:
@@ -187,6 +188,11 @@ def test_first_timeout_speaks_once_and_second_consecutive_timeout_degrades() -> 
         assert not session.active
 
     asyncio.run(exercise())
+
+
+def test_timeout_recovery_copy_comes_from_reviewed_registry() -> None:
+    assert render_template(TemplateId.STT_RECOVERY) == STT_RECOVERY_LINE
+    assert is_bank_member(STT_RECOVERY_LINE)
 
 
 def test_success_resets_consecutive_timeout_recovery() -> None:

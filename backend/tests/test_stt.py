@@ -479,6 +479,31 @@ def test_continuous_reader_receive_stall_is_bounded_and_degrades_once() -> None:
     asyncio.run(exercise())
 
 
+def test_pcm_arms_receive_stall_deadline_before_server_vad() -> None:
+    async def exercise() -> None:
+        stream = HangingStream("receive")
+        session, _, callbacks, _ = make_session(
+            stream=stream,
+            timeout_seconds=0.005,
+        )
+        reader = asyncio.create_task(session.run_finalized_results())
+        await stream.started.wait()
+
+        sent = await session.send_pcm(b"\x00\x00")
+        result = await reader
+
+        assert sent.outcome is SttOutcome.SENT
+        assert result.outcome is SttOutcome.DROPPED
+        assert result.reason == "call_cancelled"
+        assert stream.cancelled.is_set()
+        assert callbacks.degradations == [("call-stt-001", "stt_receive_timeout")]
+        assert callbacks.transcripts == []
+        assert callbacks.recovery_prompts == []
+        assert not session.active
+
+    asyncio.run(exercise())
+
+
 def test_continuous_reader_does_not_timeout_an_idle_borrower() -> None:
     async def exercise() -> None:
         session, _, callbacks, _ = make_session(timeout_seconds=0.005)
@@ -490,6 +515,31 @@ def test_continuous_reader_does_not_timeout_an_idle_borrower() -> None:
         assert callbacks.degradations == []
         session.cancel()
         assert (await reader).outcome is SttOutcome.DROPPED
+
+    asyncio.run(exercise())
+
+
+def test_takeover_interrupts_pre_vad_receive_stall_without_callback() -> None:
+    async def exercise() -> None:
+        stream = HangingStream("receive")
+        session, _, callbacks, active_call = make_session(
+            stream=stream,
+            timeout_seconds=1,
+        )
+        reader = asyncio.create_task(session.run_finalized_results())
+        await stream.started.wait()
+        assert (await session.send_pcm(b"\x00\x00")).outcome is SttOutcome.SENT
+
+        active_call.value = False
+        session.cancel()
+
+        result = await reader
+        assert result.outcome is SttOutcome.DROPPED
+        assert result.reason == "call_cancelled"
+        assert stream.cancelled.is_set()
+        assert callbacks.transcripts == []
+        assert callbacks.recovery_prompts == []
+        assert callbacks.degradations == []
 
     asyncio.run(exercise())
 

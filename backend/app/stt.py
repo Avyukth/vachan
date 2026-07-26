@@ -155,10 +155,12 @@ class StreamingSttSession:
         self._pending_result: asyncio.Task[str] | None = None
         self._reader_task: asyncio.Task[SttResult] | None = None
         self._deadline_task: asyncio.Task[None] | None = None
+        self._pre_vad_deadline_task: asyncio.Task[None] | None = None
         self._io_task: asyncio.Task[Any] | None = None
         self._utterance_id = 0
         self._waiting_for_final = False
         self._speech_in_progress = False
+        self._local_audio_pending = False
         self._timed_out_utterance: int | None = None
         self._final_wait_started_at: float | None = None
         self._utterance_lock = asyncio.Lock()
@@ -200,6 +202,7 @@ class StreamingSttSession:
             self._pending_result,
             self._reader_task,
             self._deadline_task,
+            self._pre_vad_deadline_task,
             self._io_task,
         ):
             if task is not None and task is not current:
@@ -252,6 +255,9 @@ class StreamingSttSession:
         if not self._is_current(generation):
             self.cancel()
             return SttResult(SttOutcome.DROPPED, reason="call_inactive")
+        if chunk and not self._local_audio_pending and not self._speech_in_progress:
+            self._local_audio_pending = True
+            self._arm_pre_vad_deadline(generation)
         return SttResult(SttOutcome.SENT)
 
     async def _receive_final(self, generation: int) -> str:
@@ -278,12 +284,45 @@ class StreamingSttSession:
         return SttResult(SttOutcome.DEGRADED, reason=reason_code)
 
     def _begin_utterance(self) -> int:
+        self._local_audio_pending = False
+        self._cancel_pre_vad_deadline()
         if self._deadline_task is not None:
             self._deadline_task.cancel()
         self._utterance_id += 1
         self._waiting_for_final = True
         self._timed_out_utterance = None
         return self._utterance_id
+
+    def _cancel_pre_vad_deadline(self) -> None:
+        task = self._pre_vad_deadline_task
+        self._pre_vad_deadline_task = None
+        if task is None:
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if task is not current:
+            task.cancel()
+
+    def _arm_pre_vad_deadline(self, generation: int) -> None:
+        """Bound silence from Saaras after the browser has supplied caller PCM."""
+        self._cancel_pre_vad_deadline()
+        self._pre_vad_deadline_task = asyncio.create_task(self._watch_pre_vad_deadline(generation))
+
+    async def _watch_pre_vad_deadline(self, generation: int) -> None:
+        current = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._timeout_seconds)
+            if (
+                self._is_current(generation)
+                and self._local_audio_pending
+                and not self._speech_in_progress
+            ):
+                await self._degrade(generation, "stt_receive_timeout")
+        finally:
+            if self._pre_vad_deadline_task is current:
+                self._pre_vad_deadline_task = None
 
     def _arm_final_deadline(self, generation: int) -> None:
         if not self._waiting_for_final:
@@ -365,11 +404,19 @@ class StreamingSttSession:
                     self._begin_utterance()
                 elif signal == "END_SPEECH":
                     self._speech_in_progress = False
+                    self._local_audio_pending = False
+                    self._cancel_pre_vad_deadline()
                     self._arm_final_deadline(generation)
+                elif self._local_audio_pending:
+                    # Any receive activity proves the stream is alive, but until
+                    # Saaras acknowledges speech the next event remains bounded.
+                    self._arm_pre_vad_deadline(generation)
 
                 transcript = _final_transcript(message)
                 if transcript is None:
                     continue
+                self._local_audio_pending = False
+                self._cancel_pre_vad_deadline()
                 if (
                     self._timed_out_utterance is not None
                     and self._timed_out_utterance == self._utterance_id

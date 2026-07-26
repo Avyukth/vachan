@@ -35,6 +35,7 @@ INCOMPLETE_VERIFICATION_INPUT_MARKER: Final = "[verification input withheld]"
 
 _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _NUMERIC_DATE_PATTERN = re.compile(r"(?<!\d)(?P<day>[0-3]?\d)\s*[/.\-]\s*(?P<month>[01]?\d)(?!\d)")
+_EXACT_NUMERIC_DATE_PATTERN = re.compile(r"^\s*[0-3]?\d\s*[/.\-]\s*[01]?\d\s*$")
 
 
 class VerificationField(StrEnum):
@@ -454,6 +455,13 @@ def normalize_birth_day_month(value: str) -> tuple[int, int] | None:
 
 def normalize_reference_last4(value: str) -> str | None:
     """Normalize four spoken/typed reference characters without logging them."""
+
+    normalized = unicodedata.normalize("NFKC", value).translate(_DEVANAGARI_DIGITS).casefold()
+    # A bare two-part numeric date belongs exclusively to the birth field. Without
+    # this disambiguation, the split-turn collector also interprets ``14/09`` as
+    # reference ``1409`` and consumes an attempt before the actual reference arrives.
+    if _EXACT_NUMERIC_DATE_PATTERN.fullmatch(normalized):
+        return None
 
     tokens = _normalized_tokens(value)
     compact = "".join(tokens).upper()

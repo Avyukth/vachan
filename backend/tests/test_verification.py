@@ -73,6 +73,12 @@ def test_reference_last4_normalization(raw: str) -> None:
     assert normalize_reference_last4(raw) == "4729"
 
 
+@pytest.mark.parametrize("raw", ["14/09", "१४/०९", "14-09", "14.09"])
+def test_numeric_birth_date_is_not_cross_parsed_as_reference(raw: str) -> None:
+    assert normalize_birth_day_month(raw) == (14, 9)
+    assert normalize_reference_last4(raw) is None
+
+
 @pytest.mark.parametrize(
     "raw",
     ["", "32 January", "thirty second January", "31/13", "not a date"],
@@ -198,6 +204,27 @@ def test_repeated_reference_guess_cannot_overwrite_first_field_result() -> None:
         ),
         passed=False,
     )
+
+
+def test_numeric_birth_partial_waits_for_reference_before_attempt() -> None:
+    session = VerificationSession()
+    pending = collect_verification_attempt(
+        session,
+        PendingVerificationAttempt(),
+        VerificationSubmission("14/09", "14/09"),
+        EXPECTED,
+    )
+
+    assert pending == PendingVerificationAttempt(birth_day_month_passed=True)
+    completed = collect_verification_attempt(
+        session,
+        pending,
+        VerificationSubmission("4729", "4729"),
+        EXPECTED,
+    )
+    assert not isinstance(completed, PendingVerificationAttempt)
+    assert completed.session == VerificationSession(1, VerificationStatus.CONFIRMED)
+    assert completed.evidence.passed is True
 
 
 def test_two_wrong_attempts_fail_with_fixed_content_free_close() -> None:

@@ -321,3 +321,77 @@ def test_partial_verification_turns_complete_one_attempt_without_persisting_valu
         INCOMPLETE_VERIFICATION_INPUT_MARKER,
     ]
     fake.assert_consumed()
+
+
+def test_numeric_birth_partial_does_not_guess_reference_or_consume_attempt(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    birth_value = "14/09"
+    reference_value = "4729"
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "numeric-partial-verification",
+        ("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+        (birth_value, {"intent": "verification_response"}),
+        (reference_value, {"intent": "verification_response"}),
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        await controller.run_turn()
+
+        partial = await controller.run_turn()
+        assert partial.disposition is None
+        assert controller.snapshot.identity is IdentityState.VERIFYING
+        assert controller.verification.attempts == 0
+        with pytest.raises(ToolPermissionDenied):
+            await controller.read_mock_account()
+
+        complete = await controller.run_turn()
+        assert complete.disposition is None
+        assert controller.snapshot.identity is IdentityState.CONFIRMED
+        assert controller.verification.attempts == 1
+        assert await controller.read_mock_account() is RAKESH_CASE.account
+
+    asyncio.run(exercise())
+
+    attempt_rows = tuple(
+        db_connection.execute(
+            """
+            SELECT redacted_reason
+            FROM events
+            WHERE call_id = ? AND type = 'VERIFICATION_ATTEMPT'
+            ORDER BY seq
+            """,
+            (controller.call_id,),
+        )
+    )
+    assert len(attempt_rows) == 1
+    assert '"passed":true' in str(attempt_rows[0]["redacted_reason"])
+    persisted = repr(
+        tuple(
+            db_connection.execute(
+                """
+                SELECT type, state_before, state_after, redacted_reason
+                FROM events
+                WHERE call_id = ?
+                ORDER BY seq
+                """,
+                (controller.call_id,),
+            )
+        )
+    )
+    assert birth_value not in persisted
+    assert reference_value not in persisted
+    assert all(
+        private_value not in json.dumps(request, ensure_ascii=False)
+        for request in fake.chat_requests
+        for private_value in (birth_value, reference_value)
+    )
+    assert [request["messages"][-1]["content"] for request in fake.chat_requests[1:]] == [
+        INCOMPLETE_VERIFICATION_INPUT_MARKER,
+        INCOMPLETE_VERIFICATION_INPUT_MARKER,
+    ]
+    fake.assert_consumed()

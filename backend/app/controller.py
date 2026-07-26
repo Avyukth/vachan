@@ -121,6 +121,7 @@ _CORRECTABLE_PROMISE_STATES = frozenset(
         PromiseState.READ_BACK,
     }
 )
+_MAX_SPEAKER_IDENTITY_CLARIFICATIONS = 2
 
 
 def _validated_model_amount_minor(amount_minor: int | None) -> int:
@@ -211,6 +212,7 @@ class DialogueController:
         self.third_party = ThirdPartySession(case_id=case.case_id)
         self.callback_payloads: list[dict[str, str]] = []
         self.history: tuple[PromptMessage, ...] = ()
+        self._speaker_identity_clarifications = 0
         self._started = False
         self._disposition_lock = asyncio.Lock()
         self._coordinator = StateMachineCoordinator(
@@ -577,6 +579,26 @@ class DialogueController:
             operation=lambda: self.callback_payloads.append(payload),
         )
 
+    def _bounded_unresolved_speaker_response(
+        self,
+        template_id: TemplateId,
+    ) -> tuple[str, Disposition | None]:
+        """Close safely when repeated ambiguity cannot establish who answered."""
+
+        if template_id is not TemplateId.CLARIFY:
+            self._resolve_speaker_identity_clarification()
+            return self._reviewed_template(template_id), None
+        self._speaker_identity_clarifications += 1
+        if self._speaker_identity_clarifications < _MAX_SPEAKER_IDENTITY_CLARIFICATIONS:
+            return self._reviewed_template(template_id), None
+        return (
+            self._reviewed_template(TemplateId.VERIFY_FAILED_CLOSE),
+            Disposition.VERIFICATION_FAILED,
+        )
+
+    def _resolve_speaker_identity_clarification(self) -> None:
+        self._speaker_identity_clarifications = 0
+
     async def _begin_fresh_borrower_return(self, transcript: str) -> bool:
         """Reset the third-party epoch before constructing another model prompt."""
 
@@ -635,9 +657,11 @@ class DialogueController:
                 or normalize_birth_day_month(transcript) is not None
                 or normalize_reference_last4(transcript) is not None
             ):
+                self._resolve_speaker_identity_clarification()
                 return await self._submit_verification(transcript)
             route = route_speaker_utterance(transcript, proposed_intent=proposed)
             if route.identity_target is IdentityState.THIRD_PARTY:
+                self._resolve_speaker_identity_clarification()
                 await self._coordinator.transition(
                     IdentityState.THIRD_PARTY,
                     reason_code=route.reason_code,
@@ -645,12 +669,15 @@ class DialogueController:
                 self._pending_verification = PendingVerificationAttempt()
                 return self._reviewed_template(route.template_id), None
             if route.identity_target is IdentityState.VERIFYING:
+                self._resolve_speaker_identity_clarification()
                 return self._reviewed_template(route.template_id), None
             if route.reason_code != "speaker_identity_unresolved":
+                self._resolve_speaker_identity_clarification()
                 return self._reviewed_template(route.template_id), None
-            return self._reviewed_template(validated_template), None
+            return self._bounded_unresolved_speaker_response(validated_template)
 
         if self.snapshot.identity is IdentityState.THIRD_PARTY:
+            self._resolve_speaker_identity_clarification()
             # A model label cannot unlock a shared handset. Only the deterministic
             # explicit-borrower matcher may start a fresh verification epoch.
             if await self._begin_fresh_borrower_return(transcript):
@@ -672,6 +699,8 @@ class DialogueController:
                 borrower_display_name=self.case.borrower_display_name,
             )
         route = route_speaker_utterance(transcript, proposed_intent=proposed)
+        if route.reason_code != "speaker_identity_unresolved":
+            self._resolve_speaker_identity_clarification()
         if route.identity_target is not None:
             await self._coordinator.transition(
                 route.identity_target,
@@ -684,7 +713,7 @@ class DialogueController:
             return self._reviewed_template(route.template_id), None
         if route.reason_code != "speaker_identity_unresolved":
             return self._reviewed_template(route.template_id), None
-        return self._reviewed_template(validated_template), None
+        return self._bounded_unresolved_speaker_response(validated_template)
 
     async def _invalid_promise_action(
         self,

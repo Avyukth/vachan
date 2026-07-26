@@ -13,6 +13,7 @@ from app.actions import (
     PreConfirmationIntent,
     validate_preconfirmation_classification,
 )
+from app.contracts import Disposition
 from app.controller import DialogueController, controller_preconfirmation_template
 from app.db import EvidenceLedger
 from app.guard import SAFE_OUTPUT_LINE
@@ -170,6 +171,42 @@ def test_scam_concern_and_malformed_model_output_use_exact_fixed_templates(
         assert controller.snapshot.identity is IdentityState.UNVERIFIED
 
     asyncio.run(exercise())
+    fake.assert_consumed()
+
+
+def test_repeated_unresolved_speaker_closes_without_disclosure(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "bounded-speaker-clarification",
+        ("मुझे कुछ पूछना है", {"intent": "other"}),
+        ("आप पहले बताइए", {"intent": "other"}),
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        first = await controller.run_turn()
+        second = await controller.run_turn()
+
+        assert first.speech_text == render_template(TemplateId.CLARIFY)
+        assert first.disposition is None
+        assert second.speech_text == render_template(TemplateId.VERIFY_FAILED_CLOSE)
+        assert second.disposition is Disposition.VERIFICATION_FAILED
+        assert controller.disposition is Disposition.VERIFICATION_FAILED
+        assert controller.snapshot.identity is IdentityState.UNVERIFIED
+
+    asyncio.run(exercise())
+
+    persisted = db_connection.execute(
+        "SELECT disposition FROM calls WHERE id = ?",
+        (controller.call_id,),
+    ).fetchone()
+    assert persisted["disposition"] == Disposition.VERIFICATION_FAILED.value
+    assert RAKESH_CASE.account.lender_name not in repr(fake.chat_requests)
+    assert str(RAKESH_CASE.account.outstanding_minor) not in repr(fake.chat_requests)
     fake.assert_consumed()
 
 

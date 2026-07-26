@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.audio_spike import SAMPLE_RATE
 from app.protocol import AgentAudioFrame, MediaFrameKind
@@ -158,6 +159,21 @@ class BrowserEventBinding(RecordingBinding):
 
     async def next_client_event(self) -> dict[str, object]:
         return await self.events.get()
+
+
+@dataclass
+class WrongCallBrowserEventBinding(BrowserEventBinding):
+    async def on_connected(self) -> None:
+        await self.events.put(
+            AgentAudioFrame(
+                call_id="call-other",
+                media_seq=1,
+                ts=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+                kind=MediaFrameKind.OPENING,
+                audio_base64="UklGRg==",
+                speech_text="यह गलत कॉल का फ़्रेम है।",
+            ).model_dump(mode="json")
+        )
 
 
 def final_message(transcript: str) -> dict[str, Any]:
@@ -541,6 +557,32 @@ def test_production_websocket_sends_opening_and_controller_turn_to_browser() -> 
     assert binding.timings
     assert binding.timings[0][0] == "call-stt-001"
     assert binding.timings[0][1] >= 0
+
+
+def test_production_websocket_rejects_cross_call_media_before_send() -> None:
+    stream = FakeStream()
+    binding = WrongCallBrowserEventBinding()
+
+    @asynccontextmanager
+    async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+        assert api_key == "backend-only-key"
+        yield stream
+
+    app = FastAPI()
+    app.state.sarvam_api_key = "backend-only-key"
+    app.state.sarvam_stream_factory = stream_factory
+    app.state.stt_call_binding_factory = lambda call_id: binding
+    app.state.stt_sessions = SttSessionRegistry()
+    app.include_router(router)
+
+    path = STT_WEBSOCKET_PATH.format(call_id="call-stt-001")
+    with TestClient(app).websocket_connect(path) as websocket:
+        assert websocket.receive_json()["type"] == "ready"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_json()
+
+    assert closed.value.code == 1011
+    assert binding.degradations == [("call-stt-001", "stt_network_failure")]
 
 
 def test_production_websocket_rejects_inactive_call_before_opening_stream() -> None:

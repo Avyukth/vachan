@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -148,6 +148,7 @@ class StreamingSttSession:
         self._pending_result: asyncio.Task[str] | None = None
         self._reader_task: asyncio.Task[SttResult] | None = None
         self._deadline_task: asyncio.Task[None] | None = None
+        self._io_task: asyncio.Task[Any] | None = None
         self._utterance_id = 0
         self._waiting_for_final = False
         self._timed_out_utterance: int | None = None
@@ -187,9 +188,39 @@ class StreamingSttSession:
             current = asyncio.current_task()
         except RuntimeError:
             current = None
-        for task in (self._pending_result, self._reader_task, self._deadline_task):
+        for task in (
+            self._pending_result,
+            self._reader_task,
+            self._deadline_task,
+            self._io_task,
+        ):
             if task is not None and task is not current:
                 task.cancel()
+
+    async def _bounded_stream_request(
+        self,
+        generation: int,
+        request: Callable[[], Awaitable[None]],
+    ) -> SttResult | None:
+        """Bound one socket write and make call cancellation interrupt it."""
+        current = asyncio.current_task()
+        assert current is not None
+        self._io_task = current
+        try:
+            async with asyncio.timeout(self._timeout_seconds):
+                await request()
+        except TimeoutError:
+            return await self._degrade(generation, "stt_request_timeout")
+        except asyncio.CancelledError:
+            if not self._is_current(generation):
+                return SttResult(SttOutcome.DROPPED, reason="call_cancelled")
+            raise
+        except Exception:
+            return await self._degrade(generation, "stt_network_failure")
+        finally:
+            if self._io_task is current:
+                self._io_task = None
+        return None
 
     async def send_pcm(self, chunk: bytes) -> SttResult:
         """Send one validated PCM16/16kHz chunk or degrade on network loss."""
@@ -199,14 +230,16 @@ class StreamingSttSession:
             return SttResult(SttOutcome.DROPPED, reason="call_inactive")
 
         encoded = encode_pcm_chunk(chunk)
-        try:
-            await self._stream.transcribe(
+        request_result = await self._bounded_stream_request(
+            generation,
+            lambda: self._stream.transcribe(
                 audio=encoded,
                 encoding="audio/wav",
                 sample_rate=SAMPLE_RATE,
-            )
-        except Exception:
-            return await self._degrade(generation, "stt_network_failure")
+            ),
+        )
+        if request_result is not None:
+            return request_result
 
         if not self._is_current(generation):
             self.cancel()
@@ -288,10 +321,12 @@ class StreamingSttSession:
         if not self._is_current(generation):
             self.cancel()
             return SttResult(SttOutcome.DROPPED, reason="call_inactive")
-        try:
-            await self._stream.flush()
-        except Exception:
-            return await self._degrade(generation, "stt_network_failure")
+        request_result = await self._bounded_stream_request(
+            generation,
+            self._stream.flush,
+        )
+        if request_result is not None:
+            return request_result
         if not self._is_current(generation):
             self.cancel()
             return SttResult(SttOutcome.DROPPED, reason="call_inactive")

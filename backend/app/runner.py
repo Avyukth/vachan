@@ -274,18 +274,18 @@ async def transcribe_prerecorded_wav(wav_path: Path) -> str:
 
     pcm = _load_pcm16(wav_path)
     api_key = load_sarvam_api_key()
-    async with open_sarvam_stream(api_key) as stream:
-        for offset in range(0, len(pcm), PCM_CHUNK_BYTES):
-            chunk = pcm[offset : offset + PCM_CHUNK_BYTES]
-            if not chunk:
-                continue
-            await stream.transcribe(
-                audio=base64.b64encode(chunk).decode("ascii"),
-                encoding="audio/wav",
-                sample_rate=16_000,
-            )
-        await stream.flush()
-        async with asyncio.timeout(STT_TIMEOUT_SECONDS):
+    async with asyncio.timeout(STT_TIMEOUT_SECONDS):
+        async with open_sarvam_stream(api_key) as stream:
+            for offset in range(0, len(pcm), PCM_CHUNK_BYTES):
+                chunk = pcm[offset : offset + PCM_CHUNK_BYTES]
+                if not chunk:
+                    continue
+                await stream.transcribe(
+                    audio=base64.b64encode(chunk).decode("ascii"),
+                    encoding="audio/wav",
+                    sample_rate=16_000,
+                )
+            await stream.flush()
             async for message in stream:
                 transcript = _stream_transcript(message)
                 if transcript is not None:

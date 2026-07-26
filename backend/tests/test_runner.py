@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import wave
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
+import app.runner as runner_module
 from app.runner import (
     AUDIO_CASES,
     CaseResult,
@@ -152,6 +155,55 @@ def test_audio_failure_is_visible_and_contains_no_raw_exception() -> None:
     assert all(not result.passed for result in results)
     assert all(result.detail == "seq: [] error=RuntimeError" for result in results)
     assert "private or dependency detail" not in repr(results)
+
+
+@pytest.mark.parametrize("operation", ("connect", "send", "flush"))
+def test_real_stt_runner_deadline_bounds_the_whole_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hang() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    class Stream:
+        async def transcribe(self, **_: object) -> None:
+            if operation == "send":
+                await hang()
+
+        async def flush(self) -> None:
+            if operation == "flush":
+                await hang()
+
+        def __aiter__(self) -> Stream:
+            return self
+
+        async def __anext__(self) -> dict[str, object]:
+            return {"type": "data", "data": {"transcript": "नमस्ते"}}
+
+    @asynccontextmanager
+    async def stream_factory(_: str) -> AsyncIterator[Stream]:
+        if operation == "connect":
+            await hang()
+        yield Stream()
+
+    monkeypatch.setattr(runner_module, "_load_pcm16", lambda _: b"\x00\x00")
+    monkeypatch.setattr(runner_module, "load_sarvam_api_key", lambda: "backend-only-key")
+    monkeypatch.setattr(runner_module, "open_sarvam_stream", stream_factory)
+    monkeypatch.setattr(runner_module, "STT_TIMEOUT_SECONDS", 0.005)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(runner_module.transcribe_prerecorded_wav(Path("fixture.wav")))
+
+    assert started.is_set()
+    assert cancelled.is_set()
 
 
 def test_artifact_separates_offline_matrix_from_real_stt_audio() -> None:

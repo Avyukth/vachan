@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -59,6 +60,39 @@ class FakeStream:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+class HangingStream(FakeStream):
+    def __init__(self, operation: str) -> None:
+        super().__init__()
+        self.operation = operation
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def _hang(self) -> None:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    async def transcribe(
+        self,
+        audio: str,
+        encoding: str = "audio/wav",
+        sample_rate: int = SAMPLE_RATE,
+    ) -> None:
+        if self.operation == "send":
+            await self._hang()
+            return
+        await super().transcribe(audio, encoding, sample_rate)
+
+    async def flush(self) -> None:
+        if self.operation == "flush":
+            await self._hang()
+            return
+        await super().flush()
 
 
 @dataclass
@@ -260,6 +294,54 @@ def test_network_failure_while_sending_degrades_and_rejects_later_audio() -> Non
         assert first.outcome is SttOutcome.DEGRADED
         assert later.outcome is SttOutcome.DROPPED
         assert callbacks.degradations == [("call-stt-001", "stt_network_failure")]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("operation", ("send", "flush"))
+def test_hanging_socket_request_is_bounded_and_degrades(operation: str) -> None:
+    async def exercise() -> None:
+        stream = HangingStream(operation)
+        session, _, callbacks, _ = make_session(
+            stream=stream,
+            timeout_seconds=0.005,
+        )
+
+        if operation == "send":
+            result = await session.send_pcm(b"\x00\x00")
+        else:
+            result = await session.flush_utterance()
+
+        assert result.outcome is SttOutcome.DEGRADED
+        assert result.reason == "stt_request_timeout"
+        assert stream.cancelled.is_set()
+        assert callbacks.degradations == [("call-stt-001", "stt_request_timeout")]
+        assert callbacks.transcripts == []
+        assert not session.active
+
+    asyncio.run(exercise())
+
+
+def test_takeover_interrupts_hanging_socket_request_without_callback() -> None:
+    async def exercise() -> None:
+        stream = HangingStream("send")
+        session, _, callbacks, active_call = make_session(
+            stream=stream,
+            timeout_seconds=1,
+        )
+        pending = asyncio.create_task(session.send_pcm(b"\x00\x00"))
+        await stream.started.wait()
+
+        active_call.value = False
+        session.cancel()
+
+        result = await pending
+        assert result.outcome is SttOutcome.DROPPED
+        assert result.reason == "call_cancelled"
+        assert stream.cancelled.is_set()
+        assert callbacks.transcripts == []
+        assert callbacks.recovery_prompts == []
+        assert callbacks.degradations == []
 
     asyncio.run(exercise())
 

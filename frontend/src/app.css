@@ -93,12 +93,16 @@ h2 {
 }
 
 .topbar {
+	position: sticky;
+	top: 0;
+	z-index: 10;
 	min-height: 6rem;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 1.5rem;
 	border-bottom: 1px solid var(--color-seam);
+	background: var(--color-bg);
 }
 
 .brand-lockup h1 {
@@ -521,6 +525,17 @@ footer code {
 .evidence-card li.blocked-event {
 	border-left: 3px solid var(--color-demoted);
 	padding-left: 0.5rem;
+}
+
+@media (min-width: 48rem) and (max-width: 68rem) {
+	.workspace {
+		grid-template-columns: 1fr;
+		padding: 3rem 0;
+	}
+
+	.intro-panel {
+		padding-inline: 1rem;
+	}
 }
 
 @media (max-width: 48rem) {

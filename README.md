@@ -81,6 +81,10 @@ Diagrams: `vachan_product.drawio` (architecture · call flow · state machines).
 From the post-duel product plan (`VACHAN_PLAN_V2.md`), with honest build status
 (`VACHAN_MVP_V2.md` governs what ships today):
 
+`MVP core` below means the deterministic component and its offline safety tests are implemented.
+It does **not** mean the real spoken-call or operator journey is complete: those release gates
+remain tracked by `sarvam-v8o` and `sarvam-ch1`.
+
 | Mechanic | What it does | Status |
 |---|---|---|
 | **Bidirectional trust gate** | Agent proves itself first (anti-scam pledge, no lender name, never asks OTP/PIN), then verifies the caller with two seeded values compared in code — never spoken, never sent to the LLM | **MVP core** |
@@ -148,11 +152,12 @@ Every call ends in **exactly one disposition**:
 | `ENDED_TECHNICAL` | A dependency broke; fails closed — never converts to a business outcome |
 | `ENDED_OPERATOR` | Break-glass takeover; agent silenced permanently, reason required |
 
-## API Surface
+## Mounted API Surface
 
-REST under `/api` (vite-proxied to :8000); WS events mirror ledger rows — the UI never invents
-state. Full schema: bead `sarvam-3s2`.
+These routes are mounted by the current FastAPI application. REST under `/api` and WebSockets
+under `/ws` are vite-proxied to :8000. The frozen schema is bead `sarvam-3s2`.
 
+<!-- mounted-api:start -->
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/cases` | Seeded mock cases |
@@ -161,9 +166,22 @@ state. Full schema: bead `sarvam-3s2`.
 | POST | `/api/call/end` | End with reason |
 | POST | `/api/takeover` | Break-glass: revoke tools → cancel work → stop TTS → log |
 | POST | `/api/reset` | Reseed demo data (403 during active calls) |
-| GET | `/api/evidence/{call_id}` | Ordered event timeline |
+| POST | `/api/audio/check` | Fixed reviewed Bulbul headphone/autoplay check |
 | WS | `/ws/call/{call_id}` | PCM16 up (streaming transport) · JSON events down |
 | GET | `/healthz` | Liveness |
+<!-- mounted-api:end -->
+
+### Frozen contract, not currently mounted
+
+The v0 protocol reserves the following route, but the current application does not implement or
+mount it. The operator console currently proves its view model with an explicitly labeled replay;
+the live SQLite-backed event journey remains part of `sarvam-ch1`.
+
+<!-- contract-api:start -->
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/evidence/{call_id}` | Contracted ordered event timeline; not mounted |
+<!-- contract-api:end -->
 
 ## The Demo (120 seconds, adversarial)
 
@@ -185,8 +203,8 @@ context, and writes. Priya supervises exceptions — and is bound by the same ru
 
 ## Development
 
-Work is tracked as a **beads graph** (53 beads, 10 epics, zero cycles) — `br ready` for
-unblocked work, `bv --robot-next` for the top pick. Bead bodies are self-contained specs with
+Work is tracked as a **beads graph** — run `br stats` for current counts, `br ready` for
+unblocked work, and `bv --robot-next` for the top pick. Bead bodies are self-contained specs with
 acceptance criteria and test vectors. See `AGENTS.md` for the full operating manual.
 
 ```bash
@@ -202,7 +220,10 @@ cd backend && uv run python -m app.runner
 |---|---|---|
 | 1 Unit | State machines, normalization (lakh/hazaar → paise, "shukravaar" → ISO), guard vectors | pure functions, no fixtures |
 | 2 Integration | 13-case matrix through real controller + tools + guard + SQLite, FakeSarvamClient | offline, <30s |
-| 3 E2E | Runner (real STT on labeled prerecorded audio) + five formal live rehearsal cases | <2 min artifact |
+| 3 Evidence | Runner: real Saaras STT on three labeled prerecorded `synthetic-hi-IN` WAVs, then code-owned controller boundaries; not a real human/live call | <2 min artifact |
+
+Formal human/live rehearsals are a separate, still-pending gate in `sarvam-ztt`; they are not
+included in the generated runner score.
 
 ```
 backend/app/          states · verification · tools · guard · promise · controller ·

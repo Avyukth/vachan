@@ -39,6 +39,24 @@ def test_reviewed_fixtures_are_protocol_valid_ordered_and_visibly_labeled(
     assert all(frame.event.payload["replay_label"] == REPLAY_LABEL for frame in frames)
 
 
+def test_happy_replay_completes_call_before_terminal_disposition() -> None:
+    frames = load_replay_fixture(ReplayFixture.HAPPY, call_id="test-happy")
+    events = [frame.event for frame in frames]
+
+    terminal_transition = events[-2]
+    disposition = events[-1]
+    assert terminal_transition.type == "state_change"
+    assert terminal_transition.payload == {
+        "source": REPLAY_SOURCE,
+        "replay_label": REPLAY_LABEL,
+        "machine": "call",
+        "before": "ACTIVE",
+        "after": "COMPLETED",
+    }
+    assert disposition.type == "disposition"
+    assert disposition.payload["disposition"] == "PROMISE_CONFIRMED"
+
+
 def test_replay_route_is_absent_without_explicit_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     replay_app: FastAPI,

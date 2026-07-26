@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -16,6 +18,8 @@ from app.db import EvidenceLedger, migrate_schema
 from app.main import _end_normal_call, _reconcile_registry_orphans
 from app.preflight import AUDIO_OUTPUT_HEADER, MICROPHONE_HEADER
 from app.preflight import router as preflight_router
+from app.promise import PromiseEngine, PromiseEvent, SQLitePromiseRepository
+from app.recovery import reconcile_orphaned_calls
 from app.reset import RESET_CONFIRMATION
 from app.reset import router as reset_router
 from app.seeds import RAKESH_CASE, reset_and_reseed_demo_cases
@@ -34,6 +38,58 @@ def _start_durable_call(ledger: EvidenceLedger, call_id: str = "call-orphan") ->
         """,
         (call_id, RAKESH_CASE.case_id, NOW.isoformat()),
     )
+
+
+def _seed_read_back_candidate(
+    ledger: EvidenceLedger,
+    call_id: str = "call-orphan",
+) -> None:
+    snapshot = StateSnapshot(
+        call=CallState.ACTIVE,
+        identity=IdentityState.CONFIRMED,
+        promise=PromiseState.NONE,
+    )
+
+    def apply_event(event: PromiseEvent, mutation: Callable[[], object]) -> object:
+        nonlocal snapshot
+        before = StateSnapshot(
+            call=snapshot.call,
+            identity=snapshot.identity,
+            promise=event.state_before,
+        )
+        after = StateSnapshot(
+            call=snapshot.call,
+            identity=snapshot.identity,
+            promise=event.state_after,
+        )
+        result, _seq = ledger.mutate_with_event(
+            call_id=call_id,
+            ts=NOW,
+            event_type=event.event_type,
+            state_before=before,
+            state_after=after,
+            redacted_reason=event.redacted_reason,
+            mutation=mutation,
+        )
+        snapshot = after
+        return result
+
+    engine = PromiseEngine(
+        call_id=call_id,
+        repository=SQLitePromiseRepository(ledger),
+        demo_time_anchor=NOW,
+        clock=lambda: NOW,
+        record_event=lambda _event: None,
+        atomic_event_applier=apply_event,
+    )
+    asyncio.run(
+        engine.create_candidate(
+            caller_phrase="pandrah sau, Friday",
+            amount="pandrah sau",
+            date_phrase="Friday",
+        )
+    )
+    asyncio.run(engine.read_back())
 
 
 def _restart_app(ledger: EvidenceLedger) -> FastAPI:
@@ -76,21 +132,7 @@ def test_restart_reconciles_active_row_and_unblocks_preflight_and_reset(
     database_path = tmp_path / "restart.db"
     old_process = _open_seeded(database_path)
     _start_durable_call(old_process)
-    before = StateSnapshot(
-        call=CallState.ACTIVE,
-        identity=IdentityState.CONFIRMED,
-        promise=PromiseState.READ_BACK,
-    )
-    asyncio.run(
-        old_process.append_event(
-            call_id="call-orphan",
-            ts=NOW,
-            event_type="CALL_WAS_ACTIVE",
-            state_before=before,
-            state_after=before,
-            redacted_reason="restart_test_active",
-        )
-    )
+    _seed_read_back_candidate(old_process)
     old_process.close()
 
     new_process = _open_ledger(database_path)
@@ -99,6 +141,7 @@ def test_restart_reconciles_active_row_and_unblocks_preflight_and_reset(
 
     assert len(recovered) == 1
     assert recovered[0].disposition is Disposition.ENDED_TECHNICAL
+    assert _reconcile_registry_orphans(application) == ()
     call = new_process.connection.execute(
         "SELECT ended, disposition, operator_intervened FROM calls WHERE id = ?",
         ("call-orphan",),
@@ -106,29 +149,59 @@ def test_restart_reconciles_active_row_and_unblocks_preflight_and_reset(
     assert call["ended"] is not None
     assert call["disposition"] == Disposition.ENDED_TECHNICAL.value
     assert call["operator_intervened"] == 0
-    event = new_process.connection.execute(
+    events = new_process.connection.execute(
         """
         SELECT seq, type, state_before, state_after, redacted_reason
         FROM events
         WHERE call_id = ?
-        ORDER BY seq DESC
-        LIMIT 1
+        ORDER BY seq
         """,
         ("call-orphan",),
-    ).fetchone()
-    assert event["seq"] == 2
-    assert event["type"] == LedgerEventType.DISPOSITION_SET.value
-    assert event["redacted_reason"] == "orphaned by process restart"
-    assert json.loads(event["state_before"]) == {
+    ).fetchall()
+    assert [event["type"] for event in events][-3:] == [
+        "PROMISE_ABANDONED",
+        LedgerEventType.STATE_TRANSITION.value,
+        LedgerEventType.DISPOSITION_SET.value,
+    ]
+    disposition = events[-1]
+    assert disposition["seq"] == 5
+    assert disposition["redacted_reason"] == "orphaned by process restart"
+    assert json.loads(disposition["state_before"]) == {
         "call": "ACTIVE",
         "identity": "CONFIRMED",
-        "promise": "READ_BACK",
+        "promise": "ABANDONED",
     }
-    assert json.loads(event["state_after"]) == {
+    assert json.loads(disposition["state_after"]) == {
         "call": "ENDED",
         "identity": "UNVERIFIED",
-        "promise": "READ_BACK",
+        "promise": "ABANDONED",
     }
+    repository = SQLitePromiseRepository(new_process)
+    restored_state, restored_candidate = repository.load_state_now("call-orphan")
+    assert restored_state is PromiseState.ABANDONED
+    assert restored_candidate is not None
+    assert restored_candidate.revision == 1
+    assert (
+        new_process.connection.execute(
+            "SELECT COUNT(*) FROM promise_candidates WHERE call_id = ?",
+            ("call-orphan",),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        new_process.connection.execute(
+            "SELECT COUNT(*) FROM promises WHERE call_id = ?",
+            ("call-orphan",),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        new_process.connection.execute(
+            "SELECT COUNT(*) FROM events WHERE call_id = ?",
+            ("call-orphan",),
+        ).fetchone()[0]
+        == 5
+    )
 
     with TestClient(application) as client:
         preflight = client.post(
@@ -188,6 +261,52 @@ def test_operator_end_reconciles_registryless_call_idempotently(tmp_path: Path) 
         ).fetchone()[0]
         == 1
     )
+    ledger.close()
+
+
+def test_orphan_recovery_rolls_back_abandonment_when_disposition_evidence_fails(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atomic-recovery.db"
+    ledger = _open_seeded(database_path)
+    _start_durable_call(ledger)
+    _seed_read_back_candidate(ledger)
+    events_before = ledger.connection.execute(
+        "SELECT seq, type FROM events WHERE call_id = ? ORDER BY seq",
+        ("call-orphan",),
+    ).fetchall()
+    injector = sqlite3.connect(database_path, isolation_level=None)
+    injector.execute(
+        """
+        CREATE TRIGGER reject_orphan_disposition
+        BEFORE INSERT ON events
+        WHEN NEW.type = 'DISPOSITION_SET'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected disposition evidence failure');
+        END
+        """
+    )
+    injector.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected disposition evidence failure"):
+        reconcile_orphaned_calls(ledger, clock=lambda: NOW)
+
+    call = ledger.connection.execute(
+        "SELECT ended, disposition FROM calls WHERE id = ?",
+        ("call-orphan",),
+    ).fetchone()
+    assert call["ended"] is None
+    assert call["disposition"] is None
+    events_after = ledger.connection.execute(
+        "SELECT seq, type FROM events WHERE call_id = ? ORDER BY seq",
+        ("call-orphan",),
+    ).fetchall()
+    assert [tuple(row) for row in events_after] == [tuple(row) for row in events_before]
+    restored_state, restored_candidate = SQLitePromiseRepository(ledger).load_state_now(
+        "call-orphan"
+    )
+    assert restored_state is PromiseState.READ_BACK
+    assert restored_candidate is not None
     ledger.close()
 
 

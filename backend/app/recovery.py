@@ -116,38 +116,25 @@ def reconcile_orphaned_calls(
         after = StateSnapshot(
             call=CallState.ENDED,
             identity=IdentityState.UNVERIFIED,
-            promise=before.promise,
+            promise=(
+                PromiseState.ABANDONED
+                if before.promise
+                in {
+                    PromiseState.CANDIDATE,
+                    PromiseState.READ_BACK,
+                    PromiseState.CORRECTED,
+                    PromiseState.CONFIRMED,
+                }
+                else before.promise
+            ),
         )
         timestamp = clock()
-
-        def persist_technical_ending(
-            *,
-            ending_ts: datetime = timestamp,
-            ending_call_id: str = call_id,
-        ) -> None:
-            updated = ledger.connection.execute(
-                """
-                UPDATE calls
-                SET ended = ?, disposition = ?, operator_intervened = 0
-                WHERE id = ? AND ended IS NULL AND disposition IS NULL
-                """,
-                (
-                    ending_ts.isoformat(),
-                    Disposition.ENDED_TECHNICAL.value,
-                    ending_call_id,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise RuntimeError("orphan recovery lost its active-call race")
-
-        _, seq = ledger.mutate_with_event(
+        seq = ledger.end_orphaned_technical_call(
             call_id=call_id,
             ts=timestamp,
-            event_type=LedgerEventType.DISPOSITION_SET,
             state_before=before,
             state_after=after,
-            redacted_reason=ORPHANED_RESTART_REASON,
-            mutation=persist_technical_ending,
+            reason=ORPHANED_RESTART_REASON,
         )
         recoveries.append(
             OrphanRecovery(

@@ -630,6 +630,99 @@ class EvidenceLedger:
             )
         return result, seq
 
+    def end_orphaned_technical_call(
+        self,
+        *,
+        call_id: str,
+        ts: datetime,
+        state_before: StateSnapshot,
+        state_after: StateSnapshot,
+        reason: str,
+    ) -> int:
+        """Atomically abandon in-flight promise work and end a restart orphan."""
+
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValueError("orphan recovery reason must not be empty")
+        if state_after.call is not CallState.ENDED:
+            raise ValueError("orphan recovery must end the call")
+        if state_after.identity is not IdentityState.UNVERIFIED:
+            raise ValueError("orphan recovery must clear confirmed identity")
+
+        abandonable = {
+            PromiseState.CANDIDATE,
+            PromiseState.READ_BACK,
+            PromiseState.CORRECTED,
+            PromiseState.CONFIRMED,
+        }
+        promise_abandoned = state_before.promise in abandonable
+        expected_promise = PromiseState.ABANDONED if promise_abandoned else state_before.promise
+        if state_after.promise is not expected_promise:
+            raise ValueError("orphan recovery has an inconsistent final promise state")
+
+        abandoned_state = StateSnapshot(
+            call=state_before.call,
+            identity=state_before.identity,
+            promise=expected_promise,
+        )
+        with _immediate_transaction(self.connection):
+            call = self.connection.execute(
+                "SELECT ended, disposition FROM calls WHERE id = ?",
+                (call_id,),
+            ).fetchone()
+            if call is None:
+                raise LookupError("active call does not exist")
+            if call["ended"] is not None or call["disposition"] is not None:
+                raise RuntimeError("orphan recovery lost its active-call race")
+
+            if promise_abandoned:
+                for event_type, event_reason in (
+                    ("PROMISE_ABANDONED", "call_ended_before_confirmation"),
+                    (
+                        LedgerEventType.STATE_TRANSITION.value,
+                        "technical_failure_abandoned_candidate",
+                    ),
+                ):
+                    seq = _next_event_sequence(self.connection, call_id)
+                    _insert_event_row(
+                        self.connection,
+                        call_id=call_id,
+                        seq=seq,
+                        ts=ts,
+                        event_type=event_type,
+                        state_before=state_before,
+                        state_after=abandoned_state,
+                        redacted_reason=event_reason,
+                    )
+
+            updated = self.connection.execute(
+                """
+                UPDATE calls
+                SET ended = ?, disposition = ?, operator_intervened = 0
+                WHERE id = ? AND ended IS NULL AND disposition IS NULL
+                """,
+                (
+                    _iso_timestamp(ts),
+                    Disposition.ENDED_TECHNICAL.value,
+                    call_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("orphan recovery lost its active-call race")
+
+            disposition_seq = _next_event_sequence(self.connection, call_id)
+            _insert_event_row(
+                self.connection,
+                call_id=call_id,
+                seq=disposition_seq,
+                ts=ts,
+                event_type=LedgerEventType.DISPOSITION_SET.value,
+                state_before=abandoned_state,
+                state_after=state_after,
+                redacted_reason=normalized_reason,
+            )
+        return disposition_seq
+
     def commit_promise_outcome(
         self,
         *,

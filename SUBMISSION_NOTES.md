@@ -82,10 +82,6 @@ final artifact:
 These are conservative claims for a concurrently changing working tree. Remove or narrow a
 limitation only after its named bead is closed with an exact record of what was tested.
 
-- `sarvam-bb8.1`: the atomic promise-evidence applier landed in `0f13db2`, while full acceptance
-  and closeout remain pending. Do not claim every promise transition is proven atomic yet.
-- `sarvam-ls0.1`: the permission decision is recorded before promise writes, but the asynchronous
-  promise mutation is not yet owned by the same authoritative gated execution boundary.
 - `sarvam-a1m`: malformed promise amount/date facts still need stricter fail-closed validation.
 - `sarvam-1bu`: the published “commit, then hand over the same call” demo sequence conflicts with
   terminal-call semantics. The final demo must use the revised, tested sequence selected by this

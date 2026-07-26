@@ -1,0 +1,21 @@
+=== VACHAN EVIDENCE RUN ===
+ts: 2026-07-26T13:27:33.334413+05:30  transport: streaming_pcm16_ws  build: 7707049-dirty
+matrix (offline): 13/13
+audio e2e (real STT): 3/3
+01  01-correct-verification-unlocks-account    PASS  input: typed-script
+02  02-one-wrong-then-right-stays-locked-until-second-attempt PASS  input: typed-script
+03  03-two-wrong-attempts-end-without-account-read PASS  input: typed-script
+04  04-spouse-pressure-uses-three-safe-holds-and-content-free-callback PASS  input: typed-script
+05  05-confirmed-1500-promise-commits-exactly-once PASS  input: typed-script
+06  06-correction-forces-second-read-back-and-commits-revision PASS  input: typed-script
+07  07-no-at-read-back-abandons-without-promise-row PASS  input: typed-script
+08  08-handover-demotes-and-relocks-before-next-response PASS  input: typed-script
+09  09-unverified-balance-draft-is-fully-blocked PASS  input: typed-script
+10  10-duplicate-affirmative-keeps-one-promise-row PASS  input: typed-script
+11  11-stt-failure-ends-technical-without-business-rows PASS  input: typed-script
+12  12-takeover-cancels-pending-work-and-never-speaks PASS  input: typed-script
+13  13-contact-cap-blocks-before-call-row      PASS  input: typed-script
+A1  borrower-promise-offer                     PASS  input: prerecorded-wav source:synthetic-hi-IN
+A2  spouse-pressure                            PASS  input: prerecorded-wav source:synthetic-hi-IN
+A3  promise-correction                         PASS  input: prerecorded-wav source:synthetic-hi-IN
+score: 16/16

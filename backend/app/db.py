@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -338,8 +339,86 @@ def _insert_event_row(
     )
 
 
+class _LedgerCursorView:
+    """Cursor facade that does not expose its privileged SQLite connection."""
+
+    __slots__ = ("__cursor",)
+
+    def __init__(self, cursor: sqlite3.Cursor) -> None:
+        self.__cursor = cursor
+
+    def __iter__(self) -> Iterator[sqlite3.Row]:
+        return iter(self.__cursor)
+
+    def fetchone(self) -> object | None:
+        return self.__cursor.fetchone()
+
+    def fetchall(self) -> list[object]:
+        return self.__cursor.fetchall()
+
+    def fetchmany(self, size: int | None = None) -> list[object]:
+        if size is None:
+            return self.__cursor.fetchmany()
+        return self.__cursor.fetchmany(size)
+
+    def close(self) -> None:
+        self.__cursor.close()
+
+    @property
+    def rowcount(self) -> int:
+        return self.__cursor.rowcount
+
+
+class _LedgerConnectionView:
+    """Narrow SQL view available to ordinary ledger callers.
+
+    Schema controls and SQLite callback registration remain private to the
+    ledger. The view deliberately supports only the ``execute`` and ``close``
+    operations used by repository consumers.
+    """
+
+    __slots__ = ("__close", "__execute")
+    _CONTROL_STATEMENTS = {
+        "ALTER",
+        "ATTACH",
+        "CREATE",
+        "DETACH",
+        "DROP",
+        "PRAGMA",
+        "REINDEX",
+        "VACUUM",
+    }
+    _LEADING_SQL_TRIVIA = re.compile(
+        r"\A(?:(?:\s+)|(?:--[^\n]*(?:\n|\Z))|(?:/\*.*?\*/))*",
+        re.DOTALL,
+    )
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.__execute = connection.execute
+        self.__close = connection.close
+
+    def execute(
+        self,
+        sql: str,
+        parameters: Sequence[object] = (),
+    ) -> _LedgerCursorView:
+        normalized_sql = self._LEADING_SQL_TRIVIA.sub("", sql)
+        tokens = normalized_sql.split(None, 1)
+        first_token = tokens[0].upper() if tokens else ""
+        if first_token in self._CONTROL_STATEMENTS:
+            raise sqlite3.DatabaseError(
+                "ledger schema and connection controls are not available to ordinary callers"
+            )
+        return _LedgerCursorView(self.__execute(sql, parameters))
+
+    def close(self) -> None:
+        self.__close()
+
+
 @contextmanager
-def _immediate_transaction(connection: sqlite3.Connection) -> Iterator[None]:
+def _immediate_transaction(
+    connection: sqlite3.Connection | _LedgerConnectionView,
+) -> Iterator[None]:
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield
@@ -353,27 +432,123 @@ def _immediate_transaction(connection: sqlite3.Connection) -> Iterator[None]:
 class EvidenceLedger:
     """Single-process SQLite repository with serialized evidence writes."""
 
+    __slots__ = ("__run_sanctioned_demo_reset", "_write_lock", "connection")
+
     def __init__(self, connection: sqlite3.Connection) -> None:
-        self.connection = connection
+        self.connection = _LedgerConnectionView(connection)
         self._write_lock = asyncio.Lock()
-        self._demo_reset_authorized = False
-        self.connection.create_function(
+        reset_in_progress = False
+
+        def reset_authorized() -> int:
+            return int(reset_in_progress)
+
+        connection.create_function(
             "vachan_demo_reset_authorized",
             0,
-            lambda: int(self._demo_reset_authorized),
+            reset_authorized,
         )
 
-    @contextmanager
-    def _authorize_demo_reset(self) -> Iterator[None]:
-        """Open the reset-only deletion window on this connection synchronously."""
+        def run_sanctioned_demo_reset(
+            cases: Sequence[MockCaseSeed],
+            *,
+            demo_time_anchor: datetime,
+        ) -> None:
+            """Perform the one exact governed deletion without a reusable window."""
 
-        if self._demo_reset_authorized:
-            raise RuntimeError("demo reset authorization is not re-entrant")
-        self._demo_reset_authorized = True
-        try:
-            yield
-        finally:
-            self._demo_reset_authorized = False
+            nonlocal reset_in_progress
+            if reset_in_progress:
+                raise RuntimeError("demo reset authorization is not re-entrant")
+
+            anchor = _iso_timestamp(demo_time_anchor)
+            with _immediate_transaction(connection):
+                active_call = connection.execute(
+                    "SELECT 1 FROM calls WHERE disposition IS NULL LIMIT 1"
+                ).fetchone()
+                if active_call is not None:
+                    raise ActiveCallExists("demo reset is unavailable during an active call")
+
+                governed_case_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM cases WHERE mock_label = ?",
+                        (DEMO_MOCK_LABEL,),
+                    ).fetchone()[0]
+                )
+                removed_call_count = int(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM calls
+                        JOIN cases ON cases.id = calls.case_id
+                        WHERE cases.mock_label = ?
+                        """,
+                        (DEMO_MOCK_LABEL,),
+                    ).fetchone()[0]
+                )
+
+                # This closure-owned capability is live only for the fixed,
+                # governed delete. It is cleared before seed input is read.
+                reset_in_progress = True
+                try:
+                    connection.execute(
+                        "DELETE FROM cases WHERE mock_label = ?",
+                        (DEMO_MOCK_LABEL,),
+                    )
+                finally:
+                    reset_in_progress = False
+
+                for case in cases:
+                    emi_schedule_json = json.dumps(
+                        [
+                            {
+                                "due_date": installment.due_date.isoformat(),
+                                "amount_minor": installment.amount_minor,
+                                "status": installment.status,
+                            }
+                            for installment in case.account.emi_schedule
+                        ],
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO cases (
+                            id, name, eligibility, contact_cap_remaining, mock_label,
+                            verification_birth_day, verification_birth_month,
+                            verification_reference_last4, lender_name, outstanding_minor,
+                            emi_schedule_json, demo_time_anchor
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            case.case_id,
+                            case.borrower_display_name,
+                            case.eligible,
+                            case.contact_cap_remaining,
+                            case.mock_data_label,
+                            case.verification.birth_day,
+                            case.verification.birth_month,
+                            case.verification.reference_last4,
+                            case.account.lender_name,
+                            case.account.outstanding_minor,
+                            emi_schedule_json,
+                            anchor,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO demo_resets (
+                        ts, governed_case_count, removed_call_count, redacted_reason
+                    ) VALUES (?, ?, ?, 'sanctioned_demo_reset')
+                    """,
+                    (
+                        datetime.now(UTC).isoformat(),
+                        governed_case_count,
+                        removed_call_count,
+                    ),
+                )
+
+        # The stored callable performs only the full sanctioned operation; it
+        # cannot authorize caller-provided SQL or expose a context manager.
+        self.__run_sanctioned_demo_reset = run_sanctioned_demo_reset
 
     @classmethod
     def open(cls, path: str | Path = "vachan.db") -> EvidenceLedger:
@@ -601,85 +776,10 @@ class EvidenceLedger:
     ) -> None:
         """Implement the sanctioned reset for governed demo rows only."""
 
-        anchor = _iso_timestamp(demo_time_anchor)
-        with self._authorize_demo_reset(), _immediate_transaction(self.connection):
-            active_call = self.connection.execute(
-                "SELECT 1 FROM calls WHERE disposition IS NULL LIMIT 1"
-            ).fetchone()
-            if active_call is not None:
-                raise ActiveCallExists("demo reset is unavailable during an active call")
-
-            governed_case_count = int(
-                self.connection.execute(
-                    "SELECT COUNT(*) FROM cases WHERE mock_label = ?",
-                    (DEMO_MOCK_LABEL,),
-                ).fetchone()[0]
-            )
-            removed_call_count = int(
-                self.connection.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM calls
-                    JOIN cases ON cases.id = calls.case_id
-                    WHERE cases.mock_label = ?
-                    """,
-                    (DEMO_MOCK_LABEL,),
-                ).fetchone()[0]
-            )
-
-            self.connection.execute(
-                "DELETE FROM cases WHERE mock_label = ?",
-                (DEMO_MOCK_LABEL,),
-            )
-            for case in cases:
-                emi_schedule_json = json.dumps(
-                    [
-                        {
-                            "due_date": installment.due_date.isoformat(),
-                            "amount_minor": installment.amount_minor,
-                            "status": installment.status,
-                        }
-                        for installment in case.account.emi_schedule
-                    ],
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-                self.connection.execute(
-                    """
-                    INSERT INTO cases (
-                        id, name, eligibility, contact_cap_remaining, mock_label,
-                        verification_birth_day, verification_birth_month,
-                        verification_reference_last4, lender_name, outstanding_minor,
-                        emi_schedule_json, demo_time_anchor
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        case.case_id,
-                        case.borrower_display_name,
-                        case.eligible,
-                        case.contact_cap_remaining,
-                        case.mock_data_label,
-                        case.verification.birth_day,
-                        case.verification.birth_month,
-                        case.verification.reference_last4,
-                        case.account.lender_name,
-                        case.account.outstanding_minor,
-                        emi_schedule_json,
-                        anchor,
-                    ),
-                )
-            self.connection.execute(
-                """
-                INSERT INTO demo_resets (
-                    ts, governed_case_count, removed_call_count, redacted_reason
-                ) VALUES (?, ?, ?, 'sanctioned_demo_reset')
-                """,
-                (
-                    datetime.now(UTC).isoformat(),
-                    governed_case_count,
-                    removed_call_count,
-                ),
-            )
+        self.__run_sanctioned_demo_reset(
+            cases,
+            demo_time_anchor=demo_time_anchor,
+        )
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

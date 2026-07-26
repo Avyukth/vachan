@@ -392,3 +392,75 @@ def test_proof_rows_reject_direct_deletes(
         ledger.connection.execute(f"DELETE FROM {table}")
 
     assert ledger.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] >= 1
+
+
+def test_reset_authority_cannot_be_forged_through_ledger_attributes(
+    ledger: EvidenceLedger,
+) -> None:
+    _append_denied_tool_decision(ledger)
+    _end_call(ledger)
+    audit_count = ledger.connection.execute("SELECT COUNT(*) FROM demo_resets").fetchone()[0]
+
+    # Regression for the concrete audit bypass against the original mutable
+    # `_demo_reset_authorized` field and reusable context manager.
+    with pytest.raises(AttributeError):
+        ledger._demo_reset_authorized = True
+    assert not hasattr(ledger, "_authorize_demo_reset")
+
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        ledger.connection.execute(
+            "DELETE FROM cases WHERE mock_label = ?",
+            (DEMO_MOCK_LABEL,),
+        )
+
+    assert ledger.connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 2
+    assert ledger.connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 1
+    assert ledger.connection.execute("SELECT COUNT(*) FROM tool_decisions").fetchone()[0] == 1
+    assert (
+        ledger.connection.execute("SELECT COUNT(*) FROM demo_resets").fetchone()[0] == audit_count
+    )
+
+
+@pytest.mark.parametrize(
+    ("control_name", "arguments"),
+    [
+        ("create_function", ("vachan_demo_reset_authorized", 0, lambda: 1)),
+        ("set_authorizer", (None,)),
+        ("executescript", ("DROP TRIGGER prevent_cases_delete;",)),
+    ],
+)
+def test_public_connection_cannot_replace_reset_guards(
+    ledger: EvidenceLedger,
+    control_name: str,
+    arguments: tuple[object, ...],
+) -> None:
+    with pytest.raises(AttributeError):
+        getattr(ledger.connection, control_name)(*arguments)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DROP TRIGGER prevent_cases_delete",
+        "PRAGMA writable_schema = ON",
+        "CREATE TABLE reset_bypass (id INTEGER)",
+        "/* bypass simple prefix checks */ DROP TRIGGER prevent_cases_delete",
+    ],
+)
+def test_public_connection_cannot_modify_guard_schema(
+    ledger: EvidenceLedger,
+    sql: str,
+) -> None:
+    with pytest.raises(sqlite3.DatabaseError, match="connection controls|not authorized"):
+        ledger.connection.execute(sql)
+
+
+def test_public_cursor_does_not_leak_privileged_connection(
+    ledger: EvidenceLedger,
+) -> None:
+    cursor = ledger.connection.execute("SELECT COUNT(*) FROM cases")
+
+    with pytest.raises(AttributeError):
+        _ = cursor.connection
+    with pytest.raises(AttributeError):
+        cursor.execute("DROP TRIGGER prevent_cases_delete")

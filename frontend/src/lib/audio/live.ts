@@ -57,11 +57,32 @@ function isPositiveInteger(value: unknown): value is number {
 	return Number.isInteger(value) && (value as number) > 0;
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+	const allowedKeys = new Set(allowed);
+	return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
 function isTimezoneAwareTimestamp(value: unknown): value is string {
+	if (typeof value !== 'string') return false;
+	const match =
+		/^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.exec(
+			value
+		);
+	if (!match?.groups || Number.isNaN(Date.parse(value))) return false;
+
+	const year = Number(match.groups.year);
+	const month = Number(match.groups.month);
+	const day = Number(match.groups.day);
+	const hour = Number(match.groups.hour);
+	const minute = Number(match.groups.minute);
+	const second = Number(match.groups.second);
+	if (year < 1 || hour > 23 || minute > 59 || second > 59) return false;
+
+	const calendarProbe = new Date(Date.UTC(year, month - 1, day));
 	return (
-		typeof value === 'string' &&
-		/(?:Z|[+-]\d{2}:\d{2})$/u.test(value) &&
-		!Number.isNaN(Date.parse(value))
+		calendarProbe.getUTCFullYear() === year &&
+		calendarProbe.getUTCMonth() === month - 1 &&
+		calendarProbe.getUTCDate() === day
 	);
 }
 
@@ -74,7 +95,12 @@ function isExpectedCall(value: unknown, policy: LiveVoiceFramePolicy): value is 
 }
 
 function parseTimings(value: unknown): TurnTimings | null {
-	if (!isRecord(value)) return null;
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, ['stt_ms', 'llm_ms', 'tts_ms', 'total_ms'])
+	) {
+		return null;
+	}
 	const { stt_ms, llm_ms, tts_ms, total_ms } = value;
 	if (
 		!isNonNegativeInteger(stt_ms) ||
@@ -103,6 +129,7 @@ export function parseLiveVoiceFrame(
 
 	if (
 		value.type === 'ready' &&
+		hasOnlyKeys(value, ['api_version', 'type', 'call_id', 'sample_rate', 'encoding']) &&
 		isPositiveInteger(value.sample_rate) &&
 		value.encoding === 'pcm_s16le'
 	) {
@@ -117,6 +144,7 @@ export function parseLiveVoiceFrame(
 
 	if (
 		value.type === 'transport_error' &&
+		hasOnlyKeys(value, ['api_version', 'type', 'call_id', 'detail']) &&
 		typeof value.detail === 'string' &&
 		value.detail.trim().length > 0
 	) {
@@ -130,6 +158,20 @@ export function parseLiveVoiceFrame(
 
 	if (
 		value.type !== 'agent_audio' ||
+		!hasOnlyKeys(value, [
+			'api_version',
+			'type',
+			'source',
+			'call_id',
+			'media_seq',
+			'ts',
+			'kind',
+			'final_media',
+			'audio_base64',
+			'content_type',
+			'speech_text',
+			'timings'
+		]) ||
 		value.source !== 'transient_media' ||
 		policy.acceptAudio === false ||
 		!isPositiveInteger(value.media_seq) ||
@@ -145,8 +187,9 @@ export function parseLiveVoiceFrame(
 	) {
 		return null;
 	}
-	const timings = value.timings === undefined ? null : parseTimings(value.timings);
-	if (value.timings !== undefined && timings === null) return null;
+	const timings =
+		value.timings === undefined || value.timings === null ? null : parseTimings(value.timings);
+	if (value.timings !== undefined && value.timings !== null && timings === null) return null;
 	return {
 		api_version: PROTOCOL_VERSION,
 		type: 'agent_audio',

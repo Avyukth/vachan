@@ -1,8 +1,32 @@
 import { describe, expect, test } from 'bun:test';
 
+import sharedFrameCasesJson from '../../../../backend/tests/fixtures/live_voice_frame_cases.json';
 import { decodeBase64Audio, parseLiveVoiceFrame } from './live';
 
+interface SharedFrameCase {
+	readonly name: string;
+	readonly accepted: boolean;
+	readonly frame: Record<string, unknown>;
+}
+
+const sharedFrameCases = sharedFrameCasesJson as SharedFrameCase[];
+
 describe('live voice frames', () => {
+	test('matches the backend verdict for every shared differential fixture', () => {
+		for (const frameCase of sharedFrameCases) {
+			const parsed = parseLiveVoiceFrame(frameCase.frame, {
+				expectedCallId: 'call-live-001'
+			});
+			expect({
+				name: frameCase.name,
+				accepted: parsed !== null
+			}).toEqual({
+				name: frameCase.name,
+				accepted: frameCase.accepted
+			});
+		}
+	});
+
 	test('accepts one bounded WAV response with honest stage timings', () => {
 		const frame = parseLiveVoiceFrame({
 			api_version: 'v0',

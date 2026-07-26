@@ -1,0 +1,145 @@
+[
+  {
+    "name": "explicit null timings",
+    "accepted": true,
+    "frame": {
+      "api_version": "v0",
+      "type": "agent_audio",
+      "source": "transient_media",
+      "call_id": "call-live-001",
+      "media_seq": 1,
+      "ts": "2026-07-26T12:00:00+05:30",
+      "kind": "opening",
+      "final_media": false,
+      "audio_base64": "UklGRg==",
+      "content_type": "audio/wav",
+      "speech_text": "सुरक्षित शुरुआत।",
+      "timings": null
+    }
+  },
+  {
+    "name": "valid leap day",
+    "accepted": true,
+    "frame": {
+      "api_version": "v0",
+      "type": "agent_audio",
+      "source": "transient_media",
+      "call_id": "call-live-001",
+      "media_seq": 2,
+      "ts": "2024-02-29T23:59:59Z",
+      "kind": "turn",
+      "final_media": false,
+      "audio_base64": "UklGRg==",
+      "content_type": "audio/wav",
+      "speech_text": "सुरक्षित उत्तर।",
+      "timings": {
+        "stt_ms": 100,
+        "llm_ms": 200,
+        "tts_ms": 300,
+        "total_ms": 600
+      }
+    }
+  },
+  {
+    "name": "undeclared agent field",
+    "accepted": false,
+    "frame": {
+      "api_version": "v0",
+      "type": "agent_audio",
+      "source": "transient_media",
+      "call_id": "call-live-001",
+      "media_seq": 3,
+      "ts": "2026-07-26T12:00:00Z",
+      "kind": "turn",
+      "final_media": false,
+      "audio_base64": "UklGRg==",
+      "content_type": "audio/wav",
+      "speech_text": "सुरक्षित उत्तर।",
+      "timings": null,
+      "persisted": true
+    }
+  },
+  {
+    "name": "undeclared timing field",
+    "accepted": false,
+    "frame": {
+      "api_version": "v0",
+      "type": "agent_audio",
+      "source": "transient_media",
+      "call_id": "call-live-001",
+      "media_seq": 4,
+      "ts": "2026-07-26T12:00:00Z",
+      "kind": "turn",
+      "final_media": false,
+      "audio_base64": "UklGRg==",
+      "content_type": "audio/wav",
+      "speech_text": "सुरक्षित उत्तर।",
+      "timings": {
+        "stt_ms": 100,
+        "llm_ms": 200,
+        "tts_ms": 300,
+        "total_ms": 600,
+        "network_ms": 5
+      }
+    }
+  },
+  {
+    "name": "impossible normalized day",
+    "accepted": false,
+    "frame": {
+      "api_version": "v0",
+      "type": "agent_audio",
+      "source": "transient_media",
+      "call_id": "call-live-001",
+      "media_seq": 5,
+      "ts": "2026-02-30T12:00:00Z",
+      "kind": "turn",
+      "final_media": false,
+      "audio_base64": "UklGRg==",
+      "content_type": "audio/wav",
+      "speech_text": "सुरक्षित उत्तर।",
+      "timings": null
+    }
+  },
+  {
+    "name": "impossible non-leap day",
+    "accepted": false,
+    "frame": {
+      "api_version": "v0",
+      "type": "agent_audio",
+      "source": "transient_media",
+      "call_id": "call-live-001",
+      "media_seq": 6,
+      "ts": "2025-02-29T12:00:00+05:30",
+      "kind": "recovery",
+      "final_media": true,
+      "audio_base64": "UklGRg==",
+      "content_type": "audio/wav",
+      "speech_text": "लाइन सुरक्षित रूप से बंद की गई।",
+      "timings": null
+    }
+  },
+  {
+    "name": "undeclared ready field",
+    "accepted": false,
+    "frame": {
+      "api_version": "v0",
+      "type": "ready",
+      "call_id": "call-live-001",
+      "sample_rate": 16000,
+      "encoding": "pcm_s16le",
+      "source": "transient_media"
+    }
+  },
+  {
+    "name": "undeclared transport error field",
+    "accepted": false,
+    "frame": {
+      "api_version": "v0",
+      "type": "transport_error",
+      "call_id": "call-live-001",
+      "detail": "closed safely",
+      "reason": "legacy"
+    }
+  }
+]

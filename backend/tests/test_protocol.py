@@ -1,6 +1,8 @@
 """Contract tests for Vachan's versioned REST and WebSocket messages."""
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -191,3 +193,17 @@ def test_live_audio_contract_rejects_legacy_and_impossible_frames() -> None:
     }
     with pytest.raises(ValidationError, match="cover every measured media stage"):
         VOICE_SERVER_FRAME_ADAPTER.validate_python(impossible)
+
+
+def test_shared_live_voice_frame_cases_match_backend_contract() -> None:
+    """The Python validator agrees with the mirrored browser fixture verdicts."""
+    fixture_path = Path(__file__).parent / "fixtures" / "live_voice_frame_cases.json"
+    cases = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    for case in cases:
+        try:
+            VOICE_SERVER_FRAME_ADAPTER.validate_python(case["frame"])
+            accepted = True
+        except ValidationError:
+            accepted = False
+        assert accepted is case["accepted"], case["name"]

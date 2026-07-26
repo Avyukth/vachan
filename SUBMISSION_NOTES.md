@@ -82,7 +82,6 @@ final artifact:
 These are conservative claims for a concurrently changing working tree. Remove or narrow a
 limitation only after its named bead is closed with an exact record of what was tested.
 
-- `sarvam-a1m`: malformed promise amount/date facts still need stricter fail-closed validation.
 - `sarvam-1bu`: the published “commit, then hand over the same call” demo sequence conflicts with
   terminal-call semantics. The final demo must use the revised, tested sequence selected by this
   bead; Vachan must never process another turn after a terminal disposition.

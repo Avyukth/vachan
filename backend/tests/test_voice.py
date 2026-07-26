@@ -16,7 +16,7 @@ from app.llm import LLMUnavailable
 from app.protocol import TransportMode
 from app.seeds import RAKESH_CASE
 from app.states import IdentityState, PromiseState
-from app.voice import VoiceCallBinding
+from app.voice import ProductionBreakGlassTakeover, VoiceCallBinding
 from tests.fakes import SILENT_WAV
 
 JsonObject = dict[str, Any]
@@ -289,6 +289,55 @@ def test_transport_failure_before_connect_ends_call_technical(
     assert binding.controller.snapshot.call.value == "ENDED"
     assert dialogue.chat_messages == []
     assert dialogue.spoken == []
+
+
+def test_active_takeover_runs_safety_effects_without_awaiting_voice_lock(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    binding, _ = _existing_voice_call(
+        db_connection,
+        call_id="call-live-active-takeover",
+        frozen_demo_clock=frozen_demo_clock,
+    )
+    timeline: list[str] = []
+
+    def revoke() -> None:
+        binding.revoke_agent()
+        timeline.append("revoke")
+
+    def cancel() -> tuple[str, ...]:
+        timeline.append("cancel")
+        return ("active-turn",)
+
+    def stop() -> None:
+        binding.stop_generated_speech()
+        timeline.append("stop")
+
+    takeover = ProductionBreakGlassTakeover(
+        state=binding.controller.coordinator,
+        event_writer=binding.controller.ledger,
+        end_writer=binding.controller.ledger,
+        revoke_tools=revoke,
+        cancel_pending_work=cancel,
+        stop_generated_speech=stop,
+        clock=frozen_demo_clock.now,
+    )
+    takeover.attach_binding(binding)
+
+    async def forbidden_prepare() -> None:
+        raise AssertionError("ACTIVE takeover must not await the voice turn lock")
+
+    async def exercise() -> None:
+        await binding.on_connected()
+        await binding.next_client_event()
+        binding.prepare_takeover = forbidden_prepare  # type: ignore[method-assign]
+        await takeover.takeover()
+
+    asyncio.run(exercise())
+
+    assert timeline[:3] == ["revoke", "cancel", "stop"]
+    assert binding.controller.snapshot.call.value == "OPERATOR_TAKEOVER"
 
 
 def test_voice_binding_attributes_llm_failure_without_relabeling_it_as_stt(

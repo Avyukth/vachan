@@ -14,6 +14,7 @@ const eventTypes = new Set<EventType>([
 	'tool_decision',
 	'guard_block',
 	'disposition',
+	'diagnostic',
 	'error'
 ]);
 

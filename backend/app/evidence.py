@@ -73,8 +73,10 @@ def _event_category(ledger_type: str) -> EventType:
         return EventType.DISPOSITION
     if ledger_type == LedgerEventType.TECHNICAL_FAILURE.value:
         return EventType.ERROR
-    if ledger_type == "TURN_TIMING":
+    if ledger_type == LedgerEventType.SAFE_UTTERANCE.value:
         return EventType.UTTERANCE
+    if ledger_type == LedgerEventType.TURN_TIMING.value:
+        return EventType.DIAGNOSTIC
     return EventType.STATE_CHANGE
 
 
@@ -105,12 +107,17 @@ def _row_to_event(row: sqlite3.Row) -> ServerEvent:
             raise ValueError("disposition evidence is missing its terminal call outcome")
         payload["disposition"] = str(row["disposition"])
     elif event_type is EventType.UTTERANCE:
+        if row["speaker"] is None or row["guard_result"] is None or row["speech_text"] is None:
+            raise ValueError("safe-utterance evidence is missing its typed detail row")
         payload.update(
             {
-                "speaker": "system",
-                "text": "Turn timing evidence recorded.",
+                "speaker": str(row["speaker"]),
+                "guard_result": str(row["guard_result"]),
+                "text": str(row["speech_text"]),
             }
         )
+    elif event_type is EventType.DIAGNOSTIC:
+        payload["component"] = "turn_timing"
     elif event_type is EventType.ERROR:
         payload["component"] = reason.removeprefix("technical_failure:")
     else:
@@ -162,12 +169,18 @@ def read_evidence_events(
             tool_decisions.identity_state,
             tool_decisions.promise_state,
             tool_decisions.reason AS tool_reason,
+            safe_utterances.speaker,
+            safe_utterances.guard_result,
+            safe_utterances.speech_text,
             calls.disposition
         FROM events
         JOIN calls ON calls.id = events.call_id
         LEFT JOIN tool_decisions
           ON tool_decisions.call_id = events.call_id
          AND tool_decisions.seq = events.seq
+        LEFT JOIN safe_utterances
+          ON safe_utterances.call_id = events.call_id
+         AND safe_utterances.seq = events.seq
         WHERE events.call_id = ? AND events.seq > ?
         ORDER BY events.seq
         """,

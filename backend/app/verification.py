@@ -492,6 +492,80 @@ def normalize_reference_last4(value: str) -> str | None:
     return "".join(individual) if len(individual) == 4 else None
 
 
+def contains_expected_verification_value(
+    value: str,
+    expected: ExpectedVerification,
+) -> bool:
+    """Detect any occurrence of an expected verification value without exposing it.
+
+    Normalization is intentionally stricter for submitted verification: one
+    unambiguous candidate must be compared. The output guard instead needs
+    occurrence semantics so adding a decoy value cannot hide an expected one.
+    """
+
+    tokens = _normalized_tokens(value)
+    expected_reference = _normalized_expected_reference(expected)
+
+    for token in tokens:
+        if (
+            len(token) == len(expected_reference)
+            and token.isascii()
+            and token.isalnum()
+            and token.upper() == expected_reference
+        ):
+            return True
+
+    for start in range(len(tokens)):
+        window = tokens[start : start + len(expected_reference)]
+        if len(window) != len(expected_reference):
+            continue
+        spoken_digits = [_DIGIT_ALIASES.get(token) for token in window]
+        if all(digit is not None for digit in spoken_digits):
+            candidate = "".join(str(digit) for digit in spoken_digits)
+            if candidate == expected_reference:
+                return True
+        if (
+            all(len(token) == 1 and token.isascii() and token.isalnum() for token in window)
+            and "".join(window).upper() == expected_reference
+        ):
+            return True
+
+    normalized = unicodedata.normalize("NFKC", value).translate(_DEVANAGARI_DIGITS).casefold()
+    for match in _NUMERIC_DATE_PATTERN.finditer(normalized):
+        if (int(match.group("day")), int(match.group("month"))) == (
+            expected.birth_day,
+            expected.birth_month,
+        ):
+            return True
+
+    expected_month_present = any(
+        _MONTH_ALIASES.get(token) == expected.birth_month for token in tokens
+    )
+    expected_day_present = any(
+        (token.isdigit() and int(token) == expected.birth_day)
+        or _DAY_ALIASES.get(token) == expected.birth_day
+        for token in tokens
+    )
+    if expected_day_present and expected_month_present:
+        return True
+
+    birth_labels = frozenset(
+        {
+            "birth",
+            "dob",
+            "birthday",
+            "janam",
+            "जन्म",
+            "जन्मतिथि",
+        }
+    )
+    day_labels = birth_labels | {"day", "din", "दिन", "तारीख"}
+    month_labels = birth_labels | {"month", "mahina", "महीना", "माह"}
+    if expected_day_present and any(token in day_labels for token in tokens):
+        return True
+    return expected_month_present and any(token in month_labels for token in tokens)
+
+
 def _normalized_expected_reference(expected: ExpectedVerification) -> str:
     normalized = normalize_reference_last4(expected.reference_last4)
     assert normalized is not None

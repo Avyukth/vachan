@@ -55,7 +55,7 @@ if (!('Bun' in globalThis)) {
 		).toBe(true);
 	});
 
-	test('production operator flow persists evidence through takeover, ending, and reset', async ({
+	test('production operator flow persists evidence through reload, ending, and reset', async ({
 		page
 	}, testInfo) => {
 		const consoleErrors: string[] = [];
@@ -135,6 +135,19 @@ if (!('Bun' in globalThis)) {
 			.locator('.evidence-card li')
 			.count();
 		expect(evidenceCount).toBeGreaterThanOrEqual(7);
+		const activeEvidence = await page.request.get(`/api/evidence/${callId}`);
+		expect(activeEvidence.ok()).toBe(true);
+		const activeBody = (await activeEvidence.json()) as {
+			events: Array<{ type: string; payload: Record<string, unknown> }>;
+		};
+		const persistedSafeOutput = activeBody.events
+			.filter((event) => event.type === 'utterance')
+			.at(-1)?.payload.text;
+		expect(typeof persistedSafeOutput).toBe('string');
+		expect(persistedSafeOutput).not.toBe('Turn timing evidence recorded.');
+		await expect(liveConsole.locator('.call-card blockquote')).toHaveText(
+			persistedSafeOutput as string
+		);
 
 		await page.reload();
 		const restoredConsole = page.locator('.operator-console').filter({
@@ -147,6 +160,9 @@ if (!('Bun' in globalThis)) {
 		).toBeVisible();
 		await expect(restoredConsole.locator('.evidence-card li')).toHaveCount(
 			evidenceCount
+		);
+		await expect(restoredConsole.locator('.call-card blockquote')).toHaveText(
+			persistedSafeOutput as string
 		);
 		expect(consoleErrors).toEqual([]);
 
@@ -170,17 +186,7 @@ if (!('Bun' in globalThis)) {
 		).toBeEnabled();
 		await expect(
 			degradedConsole.getByRole('button', { name: 'Break-glass takeover' })
-		).toBeEnabled();
-
-		await degradedConsole
-			.getByRole('button', { name: 'Break-glass takeover' })
-			.click();
-		await expect(degradedConsole.locator('.takeover-banner')).toContainText(
-			'OPERATOR TAKEOVER — AGENT SILENCED'
-		);
-		await degradedConsole
-			.getByRole('textbox', { name: 'REQUIRED END REASON' })
-			.fill('Browser E2E operator completed the conversation');
+		).toBeDisabled();
 		await degradedConsole.getByRole('button', { name: 'End call' }).click();
 		await page.unroute(evidenceRecovery);
 		await expect(degradedConsole.locator('.outcome-panel')).toContainText(
@@ -220,7 +226,6 @@ if (!('Bun' in globalThis)) {
 			'/ws/call/',
 			'/api/evidence/',
 			'/ws/evidence/',
-			'/api/takeover',
 			'/api/call/end',
 			'/api/reset'
 		]) {

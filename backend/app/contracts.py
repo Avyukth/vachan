@@ -40,6 +40,7 @@ class LedgerEventType(StrEnum):
     STATE_TRANSITION_REJECTED = "STATE_TRANSITION_REJECTED"
     TOOL_DECISION = "TOOL_DECISION"
     OUTPUT_BLOCKED = "OUTPUT_BLOCKED"
+    SAFE_UTTERANCE = "SAFE_UTTERANCE"
     PROMISE_CANDIDATE_CREATED = "PROMISE_CANDIDATE_CREATED"
     PROMISE_CANDIDATE_CORRECTED = "PROMISE_CANDIDATE_CORRECTED"
     PROMISE_READ_BACK = "PROMISE_READ_BACK"
@@ -48,6 +49,7 @@ class LedgerEventType(StrEnum):
     TECHNICAL_FAILURE = "TECHNICAL_FAILURE"
     OPERATOR_TAKEOVER = "OPERATOR_TAKEOVER"
     DISPOSITION_SET = "DISPOSITION_SET"
+    TURN_TIMING = "TURN_TIMING"
 
 
 class EvidenceInvariant(StrEnum):
@@ -73,7 +75,7 @@ EVIDENCE_INVARIANTS = MappingProxyType(
     }
 )
 
-APPEND_ONLY_TABLES = frozenset({"events", "promises", "operator_notes"})
+APPEND_ONLY_TABLES = frozenset({"events", "safe_utterances", "promises", "operator_notes"})
 
 
 class EvidenceContractViolation(ValueError):

@@ -23,10 +23,11 @@ from app.contracts import Disposition, LedgerEventType, StateSnapshot
 from app.states import CallState, IdentityState, PromiseState
 
 if TYPE_CHECKING:
+    from app.guard import GuardedSpeech
     from app.seeds import MockCaseSeed
     from app.tools import ToolDecision
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEMO_MOCK_LABEL = "DEMO / MOCK DATA"
 MutationT = TypeVar("MutationT")
 
@@ -78,6 +79,20 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (call_id, seq)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS one_disposition_event_per_call
+ON events(call_id) WHERE type = 'DISPOSITION_SET';
+
+CREATE TRIGGER IF NOT EXISTS reject_event_after_disposition
+BEFORE INSERT ON events
+WHEN NEW.type != 'DISPOSITION_SET'
+ AND EXISTS (
+    SELECT 1 FROM calls
+    WHERE calls.id = NEW.call_id AND calls.disposition IS NOT NULL
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'terminal call cannot accept another evidence event');
+END;
+
 CREATE TRIGGER IF NOT EXISTS enforce_events_monotonic_seq
 BEFORE INSERT ON events
 WHEN NEW.seq != COALESCE(
@@ -99,6 +114,38 @@ CREATE TABLE IF NOT EXISTS tool_decisions (
     PRIMARY KEY (call_id, seq),
     FOREIGN KEY (call_id, seq) REFERENCES events(call_id, seq) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS safe_utterances (
+    call_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    speaker TEXT NOT NULL CHECK (speaker = 'agent'),
+    guard_result TEXT NOT NULL CHECK (guard_result IN ('allowed', 'fixed_fallback')),
+    speech_text TEXT NOT NULL CHECK (length(trim(speech_text)) > 0),
+    PRIMARY KEY (call_id, seq),
+    FOREIGN KEY (call_id, seq) REFERENCES events(call_id, seq) ON DELETE CASCADE
+);
+
+CREATE TRIGGER IF NOT EXISTS enforce_safe_utterance_event_type
+BEFORE INSERT ON safe_utterances
+WHEN NOT EXISTS (
+    SELECT 1 FROM events
+    WHERE events.call_id = NEW.call_id
+      AND events.seq = NEW.seq
+      AND events.type = 'SAFE_UTTERANCE'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'safe_utterance detail requires SAFE_UTTERANCE event');
+END;
+
+CREATE TRIGGER IF NOT EXISTS reject_safe_utterance_detail_after_disposition
+BEFORE INSERT ON safe_utterances
+WHEN EXISTS (
+    SELECT 1 FROM calls
+    WHERE calls.id = NEW.call_id AND calls.disposition IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(ABORT, 'terminal call cannot accept safe_utterance detail');
+END;
 
 CREATE TABLE IF NOT EXISTS promise_candidates (
     id TEXT NOT NULL,
@@ -152,6 +199,12 @@ CREATE TRIGGER IF NOT EXISTS prevent_tool_decisions_update
 BEFORE UPDATE ON tool_decisions
 BEGIN
     SELECT RAISE(ABORT, 'tool_decisions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_safe_utterances_update
+BEFORE UPDATE ON safe_utterances
+BEGIN
+    SELECT RAISE(ABORT, 'safe_utterances are append-only');
 END;
 
 CREATE TRIGGER IF NOT EXISTS prevent_promise_candidates_revision_update
@@ -212,6 +265,13 @@ BEGIN
     SELECT RAISE(ABORT, 'tool_decisions are append-only outside sanctioned reset');
 END;
 
+CREATE TRIGGER IF NOT EXISTS prevent_safe_utterances_delete
+BEFORE DELETE ON safe_utterances
+WHEN vachan_demo_reset_authorized() != 1
+BEGIN
+    SELECT RAISE(ABORT, 'safe_utterances are append-only outside sanctioned reset');
+END;
+
 CREATE TRIGGER IF NOT EXISTS prevent_promise_candidates_delete
 BEFORE DELETE ON promise_candidates
 WHEN vachan_demo_reset_authorized() != 1
@@ -251,6 +311,10 @@ class TerminalDispositionConflict(RuntimeError):
     def __init__(self, disposition: Disposition) -> None:
         self.disposition = disposition
         super().__init__(f"call already ended as {disposition.value}")
+
+
+class TerminalEvidenceConflict(RuntimeError):
+    """An evidence append lost to a terminal disposition."""
 
 
 def connect_database(path: str | Path = "vachan.db") -> sqlite3.Connection:
@@ -601,6 +665,7 @@ class EvidenceLedger:
         state_after: StateSnapshot,
         redacted_reason: str,
         mutation: Callable[[], MutationT],
+        event_detail: Callable[[int], None] | None = None,
     ) -> tuple[MutationT, int]:
         """Commit one synchronous domain mutation and its evidence together.
 
@@ -615,20 +680,67 @@ class EvidenceLedger:
         if not redacted_reason.strip():
             raise ValueError("redacted_reason must not be empty")
 
-        with _immediate_transaction(self.connection):
-            result = mutation()
-            seq = _next_event_sequence(self.connection, call_id)
-            _insert_event_row(
-                self.connection,
-                call_id=call_id,
-                seq=seq,
-                ts=ts,
-                event_type=event_name,
-                state_before=state_before,
-                state_after=state_after,
-                redacted_reason=redacted_reason,
-            )
+        try:
+            with _immediate_transaction(self.connection):
+                result = mutation()
+                seq = _next_event_sequence(self.connection, call_id)
+                _insert_event_row(
+                    self.connection,
+                    call_id=call_id,
+                    seq=seq,
+                    ts=ts,
+                    event_type=event_name,
+                    state_before=state_before,
+                    state_after=state_after,
+                    redacted_reason=redacted_reason,
+                )
+                if event_detail is not None:
+                    event_detail(seq)
+        except sqlite3.IntegrityError as error:
+            if "terminal call cannot accept another evidence event" in str(error):
+                raise TerminalEvidenceConflict from error
+            raise
         return result, seq
+
+    async def append_safe_utterance(
+        self,
+        *,
+        call_id: str,
+        ts: datetime,
+        speech: GuardedSpeech,
+        state: StateSnapshot,
+    ) -> int:
+        """Atomically append guard-approved agent speech and its typed detail."""
+
+        if not speech.speech_text.strip():
+            raise ValueError("safe utterance text must not be empty")
+        if speech.allowed == (speech.blocked_event is not None):
+            raise ValueError("guard result and blocked evidence are inconsistent")
+        guard_result = "allowed" if speech.allowed else "fixed_fallback"
+        reason = f"guard_{guard_result}_utterance"
+
+        def insert_detail(seq: int) -> None:
+            self.connection.execute(
+                """
+                INSERT INTO safe_utterances (
+                    call_id, seq, speaker, guard_result, speech_text
+                ) VALUES (?, ?, 'agent', ?, ?)
+                """,
+                (call_id, seq, guard_result, speech.speech_text),
+            )
+
+        async with self._write_lock:
+            _, seq = self.mutate_with_event(
+                call_id=call_id,
+                ts=ts,
+                event_type=LedgerEventType.SAFE_UTTERANCE,
+                state_before=state,
+                state_after=state,
+                redacted_reason=reason,
+                mutation=lambda: None,
+                event_detail=insert_detail,
+            )
+        return seq
 
     def end_orphaned_technical_call(
         self,

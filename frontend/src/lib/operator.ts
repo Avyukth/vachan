@@ -142,6 +142,9 @@ function evidenceDetail(event: ServerEvent): string {
 	if (event.type === 'disposition') {
 		return payloadString(event, 'disposition') ?? 'Call ended';
 	}
+	if (event.type === 'diagnostic') {
+		return payloadString(event, 'reason') ?? 'Runtime diagnostic recorded';
+	}
 	return payloadString(event, 'reason') ?? 'Technical event';
 }
 

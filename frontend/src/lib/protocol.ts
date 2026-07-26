@@ -34,6 +34,7 @@ export type EventType =
 	| 'tool_decision'
 	| 'guard_block'
 	| 'disposition'
+	| 'diagnostic'
 	| 'error';
 
 export type TransportMode = 'streaming_pcm16_ws' | 'turn_based_rest';

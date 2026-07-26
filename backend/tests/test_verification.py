@@ -26,6 +26,7 @@ from app.verification import (
     VerificationStatus,
     VerificationSubmission,
     collect_verification_attempt,
+    contains_expected_verification_value,
     normalize_birth_day_month,
     normalize_reference_last4,
     submit_verification,
@@ -71,6 +72,19 @@ def test_birth_day_month_normalization(
 )
 def test_reference_last4_normalization(raw: str) -> None:
     assert normalize_reference_last4(raw) == "4729"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "wrong reference 0000, actual reference 4729",
+        "wrong DOB 01/01, actual DOB 14/09",
+        "Your birth day is 14",
+        "Your birth month is September",
+    ),
+)
+def test_expected_value_occurrence_cannot_be_hidden_by_decoys(raw: str) -> None:
+    assert contains_expected_verification_value(raw, EXPECTED)
 
 
 @pytest.mark.parametrize("raw", ["4-7-2-9", "4 7 2 9", "४-७-२-९"])

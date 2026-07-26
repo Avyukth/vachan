@@ -476,7 +476,10 @@ def test_matrix_09_unverified_balance_draft_is_fully_blocked(
             "haan boliye",
             {
                 "intent": "other",
-                "response_draft": "Your loan balance is Rs 47,382.",
+                "response_draft": (
+                    "PRIVATE-MARKER Your loan balance is Rs 47,382; "
+                    f"reference {RAKESH_CASE.verification.reference_last4}."
+                ),
             },
         ),
     )
@@ -497,6 +500,38 @@ def test_matrix_09_unverified_balance_draft_is_fully_blocked(
     assert controller.event_types().count(LedgerEventType.OUTPUT_BLOCKED.value) == 1
     assert "47,382" not in repr(controller.event_types())
     assert fake.tts_requests[2]["text"] == SAFE_OUTPUT_LINE
+    assert RAKESH_CASE.verification.reference_last4 not in repr(fake.tts_requests)
+    persisted_speech = db_connection.execute(
+        """
+        SELECT events.seq, safe_utterances.speech_text
+        FROM safe_utterances
+        JOIN events
+          ON events.call_id = safe_utterances.call_id
+         AND events.seq = safe_utterances.seq
+        WHERE safe_utterances.call_id = ?
+        ORDER BY events.seq
+        """,
+        (controller.call_id,),
+    ).fetchall()
+    blocked_seq = db_connection.execute(
+        """
+        SELECT seq FROM events
+        WHERE call_id = ? AND type = ?
+        """,
+        (controller.call_id, LedgerEventType.OUTPUT_BLOCKED.value),
+    ).fetchone()["seq"]
+    assert [row["speech_text"] for row in persisted_speech] == [
+        render_template(TemplateId.INTRO_ANTISCAM),
+        render_template(TemplateId.CLARIFY),
+        SAFE_OUTPUT_LINE,
+    ]
+    assert [row["speech_text"] for row in persisted_speech] == [
+        request["text"] for request in fake.tts_requests
+    ]
+    assert blocked_seq < persisted_speech[-1]["seq"]
+    assert "47,382" not in repr(persisted_speech)
+    assert "PRIVATE-MARKER" not in repr(persisted_speech)
+    assert RAKESH_CASE.verification.reference_last4 not in repr(persisted_speech)
     fake.assert_consumed()
 
 

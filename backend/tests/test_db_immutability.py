@@ -10,6 +10,7 @@ import pytest
 
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
 from app.db import DEMO_MOCK_LABEL, ActiveCallExists, EvidenceLedger, migrate_schema
+from app.guard import GuardedSpeech
 from app.seeds import DEMO_CASES, DEMO_TIME_ANCHOR, reset_and_reseed_demo_cases
 from app.states import CallState, IdentityState, PromiseState
 from app.tools import PermissionContext, ToolName, evaluate_tool_permission
@@ -107,6 +108,17 @@ def _insert_operator_note(ledger: EvidenceLedger) -> None:
     )
 
 
+def _append_safe_utterance(ledger: EvidenceLedger) -> None:
+    asyncio.run(
+        ledger.append_safe_utterance(
+            call_id="call-immutable",
+            ts=NOW,
+            speech=GuardedSpeech(speech_text="Reviewed safe line.", allowed=True),
+            state=SNAPSHOT,
+        )
+    )
+
+
 def _end_call(ledger: EvidenceLedger, call_id: str = "call-immutable") -> None:
     ledger.connection.execute(
         """
@@ -139,16 +151,12 @@ def _insert_non_demo_case_and_evidence(ledger: EvidenceLedger) -> None:
     )
     ledger.connection.execute(
         """
-        INSERT INTO calls (id, case_id, started, ended, transport, disposition)
+        INSERT INTO calls (id, case_id, started, transport)
         VALUES (
-            'call-non-demo', 'non-demo-case', ?, ?,
-            'streaming_pcm16_ws', 'ENDED_OPERATOR'
+            'call-non-demo', 'non-demo-case', ?, 'streaming_pcm16_ws'
         )
         """,
-        (
-            NOW.isoformat(),
-            (NOW + timedelta(minutes=1)).isoformat(),
-        ),
+        (NOW.isoformat(),),
     )
     ledger.connection.execute(
         """
@@ -163,6 +171,7 @@ def _insert_non_demo_case_and_evidence(ledger: EvidenceLedger) -> None:
         """,
         (NOW.isoformat(),),
     )
+    _end_call(ledger, "call-non-demo")
 
 
 def test_denied_tool_decision_cannot_be_rewritten_or_erased_with_its_event(
@@ -258,6 +267,11 @@ def test_parent_cascade_cannot_erase_a_denied_tool_decision(
             "tool_decisions",
             _append_denied_tool_decision,
             "UPDATE tool_decisions SET allowed = 1, reason = 'allowed'",
+        ),
+        (
+            "safe_utterances",
+            _append_safe_utterance,
+            "UPDATE safe_utterances SET speech_text = 'rewritten'",
         ),
         (
             "promise_candidates",
@@ -377,6 +391,7 @@ def test_refused_active_call_reset_adds_no_audit_and_closes_authorization(
             ),
         ),
         ("tool_decisions", _append_denied_tool_decision),
+        ("safe_utterances", _append_safe_utterance),
         ("promise_candidates", _insert_candidate),
         ("promises", _insert_promise),
         ("operator_notes", _insert_operator_note),

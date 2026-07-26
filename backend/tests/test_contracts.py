@@ -108,7 +108,7 @@ def test_contract_exports_exactly_five_exclusive_dispositions() -> None:
 
 def test_invariant_list_is_importable_and_append_only_tables_are_explicit() -> None:
     assert set(EVIDENCE_INVARIANTS) == set(EvidenceInvariant)
-    assert {"events", "promises", "operator_notes"} == APPEND_ONLY_TABLES
+    assert {"events", "safe_utterances", "promises", "operator_notes"} == APPEND_ONLY_TABLES
 
 
 def test_valid_echo_confirmed_promise_proves_one_terminal_outcome() -> None:

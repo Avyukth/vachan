@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from app.contracts import LedgerEventType
 from app.controller import DialogueController, _action_payload
 from app.db import EvidenceLedger
 from app.llm import LLMFailureCategory, LLMUnavailable
@@ -206,6 +207,15 @@ def test_live_binding_reaches_uncommitted_read_back_with_timing_evidence(
     ).fetchall()
     assert len(timing_rows) == 3
     assert all("stt_ms=35;llm_ms=120;tts_ms=250;total_ms=" in row[0] for row in timing_rows)
+    safe_rows = db_connection.execute(
+        """
+        SELECT speech_text FROM safe_utterances
+        WHERE call_id = ?
+        ORDER BY seq
+        """,
+        (binding.call_id,),
+    ).fetchall()
+    assert [row["speech_text"] for row in safe_rows] == dialogue.spoken
     assert len(dialogue.chat_messages) == 3
     assert len(dialogue.spoken) == 4
 
@@ -247,6 +257,25 @@ def test_terminal_turn_is_the_final_ordered_transient_media_frame(
     assert binding.controller.disposition is not None
     assert binding.controller.disposition.value == "PROMISE_CONFIRMED"
     assert not binding.is_call_active()
+    ordered_types = [
+        row["type"]
+        for row in db_connection.execute(
+            "SELECT type FROM events WHERE call_id = ? ORDER BY seq",
+            (binding.call_id,),
+        ).fetchall()
+    ]
+    assert ordered_types[-1] == LedgerEventType.DISPOSITION_SET.value
+    assert ordered_types.count(LedgerEventType.SAFE_UTTERANCE.value) == 5
+    assert ordered_types.count(LedgerEventType.TURN_TIMING.value) == 3
+    safe_rows = db_connection.execute(
+        """
+        SELECT speech_text FROM safe_utterances
+        WHERE call_id = ?
+        ORDER BY seq
+        """,
+        (binding.call_id,),
+    ).fetchall()
+    assert [row["speech_text"] for row in safe_rows] == dialogue.spoken
 
 
 def test_voice_binding_drops_stale_transcript_after_call_ends(

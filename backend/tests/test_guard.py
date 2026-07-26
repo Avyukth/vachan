@@ -93,8 +93,16 @@ def test_seeded_account_amount_is_loaded_without_hardcoding() -> None:
         f"reference {RAKESH_CASE.verification.reference_last4}",
         "reference four seven two nine",
         "reference चार सात दो नौ",
+        (f"wrong code 1111; actual reference {RAKESH_CASE.verification.reference_last4}"),
         (f"{RAKESH_CASE.verification.birth_day}/{RAKESH_CASE.verification.birth_month:02d}"),
+        (
+            "wrong DOB 01/01; actual DOB "
+            f"{RAKESH_CASE.verification.birth_day}/"
+            f"{RAKESH_CASE.verification.birth_month:02d}"
+        ),
         "दिन चौदह, महीना सितम्बर",
+        f"Your birth day is {RAKESH_CASE.verification.birth_day}",
+        "Your birth month is September",
     ),
 )
 def test_seeded_verification_values_are_blocked_in_every_identity_state(

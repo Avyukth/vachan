@@ -50,6 +50,7 @@ class EventType(StrEnum):
     TOOL_DECISION = "tool_decision"
     GUARD_BLOCK = "guard_block"
     DISPOSITION = "disposition"
+    DIAGNOSTIC = "diagnostic"
     ERROR = "error"
 
 

@@ -8,12 +8,12 @@ from collections.abc import Mapping
 
 import pytest
 
-from app.controller import DialogueController
+from app.controller import ControllerClosedError, DialogueController
 from app.db import EvidenceLedger
 from app.seeds import RAKESH_CASE
 from app.states import PromiseState
 from app.templates import TemplateId, render_template
-from app.tools import ToolName, ToolPermissionDenied
+from app.tools import ToolName
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
 
@@ -224,7 +224,7 @@ def test_correction_after_abandonment_uses_authoritative_state(
     fake.assert_consumed()
 
 
-def test_correction_after_commit_is_typed_denial_with_zero_new_mutation(
+def test_correction_after_commit_is_rejected_without_post_terminal_evidence(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,
 ) -> None:
@@ -247,7 +247,7 @@ def test_correction_after_commit_is_typed_denial_with_zero_new_mutation(
 
     asyncio.run(_run_all(controller, 4))
 
-    with pytest.raises(ToolPermissionDenied):
+    with pytest.raises(ControllerClosedError):
         asyncio.run(
             controller._correct_promise(  # noqa: SLF001
                 "nahi, ek hazaar pachaas",
@@ -275,6 +275,5 @@ def test_correction_after_commit_is_typed_denial_with_zero_new_mutation(
         call_id=controller.call_id,
         tool=ToolName.CORRECT_PROMISE_CANDIDATE,
     )
-    assert len(decisions) == 1
-    assert decisions[0]["allowed"] == 0
+    assert decisions == []
     fake.assert_consumed()

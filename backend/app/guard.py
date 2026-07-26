@@ -25,8 +25,7 @@ from app.states import IdentityState, PromiseState
 from app.templates import TemplateId, render_template
 from app.verification import (
     ExpectedVerification,
-    normalize_birth_day_month,
-    normalize_reference_last4,
+    contains_expected_verification_value,
 )
 
 SAFE_OUTPUT_LINE = render_template(TemplateId.OUTPUT_GUARD_FALLBACK)
@@ -242,13 +241,8 @@ def classify_block(
         return GuardCategory.FABRICATED_CREDENTIAL
 
     expected = context.expected_verification
-    if expected is not None:
-        normalized_birth = normalize_birth_day_month(draft)
-        normalized_reference = normalize_reference_last4(draft)
-        if normalized_birth == (expected.birth_day, expected.birth_month) or (
-            normalized_reference == expected.reference_last4
-        ):
-            return GuardCategory.SEEDED_VERIFICATION_VALUE
+    if expected is not None and contains_expected_verification_value(draft, expected):
+        return GuardCategory.SEEDED_VERIFICATION_VALUE
 
     if _state_value(context.identity_state) == IdentityState.CONFIRMED.value:
         return None

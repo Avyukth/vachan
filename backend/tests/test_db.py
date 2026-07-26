@@ -11,9 +11,11 @@ from app.db import (
     SCHEMA_VERSION,
     ActiveCallExists,
     EvidenceLedger,
+    TerminalEvidenceConflict,
     derive_idempotency_key,
     migrate_schema,
 )
+from app.guard import GuardedSpeech
 from app.seeds import DEMO_CASES, DEMO_TIME_ANCHOR, reset_and_reseed_demo_cases
 from app.states import CallState, IdentityState, PromiseState
 from app.tools import PermissionContext, ToolName, evaluate_tool_permission
@@ -27,6 +29,7 @@ EXPECTED_TABLES = {
     "operator_notes",
     "promise_candidates",
     "promises",
+    "safe_utterances",
     "tool_decisions",
 }
 
@@ -124,7 +127,7 @@ def test_schema_migration_is_idempotent_and_has_expected_domain_tables(
     assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
 
-def test_v1_database_additively_migrates_reset_audit_and_delete_guards(
+def test_v1_database_additively_migrates_evidence_details_and_delete_guards(
     connection: sqlite3.Connection,
 ) -> None:
     connection.execute("DROP TABLE demo_resets")
@@ -142,6 +145,15 @@ def test_v1_database_additively_migrates_reset_audit_and_delete_guards(
         ).fetchone()[0]
         == 1
     )
+    assert (
+        connection.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_schema
+            WHERE type = 'table' AND name = 'safe_utterances'
+            """
+        ).fetchone()[0]
+        == 1
+    )
     trigger_names = {
         row["name"]
         for row in connection.execute(
@@ -154,11 +166,54 @@ def test_v1_database_additively_migrates_reset_audit_and_delete_guards(
     assert {
         "prevent_events_delete",
         "prevent_tool_decisions_delete",
+        "prevent_safe_utterances_delete",
         "prevent_promise_candidates_delete",
         "prevent_promises_delete",
         "prevent_operator_notes_delete",
         "prevent_demo_resets_delete",
     }.issubset(trigger_names)
+
+
+def test_v2_database_additively_migrates_safe_utterances_without_losing_events(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    asyncio.run(
+        ledger.append_event(
+            call_id="call-001",
+            ts=NOW,
+            event_type=LedgerEventType.STATE_TRANSITION,
+            state_before=state_snapshot(),
+            state_after=state_snapshot(),
+            redacted_reason="pre_v3_evidence",
+        )
+    )
+    connection.execute("DROP TRIGGER enforce_safe_utterance_event_type")
+    connection.execute("DROP TRIGGER reject_safe_utterance_detail_after_disposition")
+    connection.execute("DROP TRIGGER prevent_safe_utterances_update")
+    connection.execute("DROP TRIGGER prevent_safe_utterances_delete")
+    connection.execute("DROP TABLE safe_utterances")
+    connection.execute("DROP TRIGGER reject_event_after_disposition")
+    connection.execute("DROP INDEX one_disposition_event_per_call")
+    connection.execute("PRAGMA user_version = 2")
+
+    migrate_schema(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(safe_utterances)")}
+    assert columns == {"call_id", "seq", "speaker", "guard_result", "speech_text"}
+    assert (
+        connection.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_schema
+            WHERE type = 'trigger' AND name = 'reject_event_after_disposition'
+            """
+        ).fetchone()[0]
+        == 1
+    )
 
 
 def test_case_schema_has_no_generic_prompt_log_or_blocked_draft_columns(
@@ -175,6 +230,156 @@ def test_case_schema_has_no_generic_prompt_log_or_blocked_draft_columns(
         "redacted_reason",
     }
     assert not {"payload", "draft", "body", "prompt", "expected_value"} & event_columns
+
+
+def test_safe_utterance_is_atomic_typed_and_guard_approved(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    snapshot = state_snapshot()
+
+    seq = asyncio.run(
+        ledger.append_safe_utterance(
+            call_id="call-001",
+            ts=NOW,
+            speech=GuardedSpeech(speech_text="  Reviewed safe line.  ", allowed=True),
+            state=snapshot,
+        )
+    )
+
+    event = connection.execute(
+        "SELECT type, redacted_reason FROM events WHERE call_id = ? AND seq = ?",
+        ("call-001", seq),
+    ).fetchone()
+    detail = connection.execute(
+        """
+        SELECT speaker, guard_result, speech_text
+        FROM safe_utterances
+        WHERE call_id = ? AND seq = ?
+        """,
+        ("call-001", seq),
+    ).fetchone()
+    assert dict(event) == {
+        "type": LedgerEventType.SAFE_UTTERANCE.value,
+        "redacted_reason": "guard_allowed_utterance",
+    }
+    assert dict(detail) == {
+        "speaker": "agent",
+        "guard_result": "allowed",
+        "speech_text": "  Reviewed safe line.  ",
+    }
+
+
+def test_safe_utterance_detail_rejects_a_non_utterance_parent(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    seq = asyncio.run(
+        ledger.append_event(
+            call_id="call-001",
+            ts=NOW,
+            event_type=LedgerEventType.STATE_TRANSITION,
+            state_before=state_snapshot(),
+            state_after=state_snapshot(),
+            redacted_reason="wrong_parent_test",
+        )
+    )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="detail requires SAFE_UTTERANCE event",
+    ):
+        connection.execute(
+            """
+            INSERT INTO safe_utterances (
+                call_id, seq, speaker, guard_result, speech_text
+            ) VALUES (?, ?, 'agent', 'allowed', 'wrong parent')
+            """,
+            ("call-001", seq),
+        )
+
+
+def test_terminal_call_rejects_late_non_disposition_evidence(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    ended = StateSnapshot(
+        call=CallState.ENDED,
+        identity=IdentityState.UNVERIFIED,
+        promise=PromiseState.NONE,
+    )
+    asyncio.run(
+        ledger.set_ended_operator(
+            call_id="call-001",
+            ts=NOW,
+            reason="test ending",
+            state=ended,
+        )
+    )
+
+    with pytest.raises(TerminalEvidenceConflict):
+        asyncio.run(
+            ledger.append_event(
+                call_id="call-001",
+                ts=NOW + timedelta(seconds=1),
+                event_type=LedgerEventType.TURN_TIMING,
+                state_before=ended,
+                state_after=ended,
+                redacted_reason="late_timing",
+            )
+        )
+
+
+def test_terminal_call_rejects_safe_utterance_detail_backfill(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    active = state_snapshot()
+    orphan_seq = asyncio.run(
+        ledger.append_event(
+            call_id="call-001",
+            ts=NOW,
+            event_type=LedgerEventType.SAFE_UTTERANCE,
+            state_before=active,
+            state_after=active,
+            redacted_reason="injected_orphan_detail",
+        )
+    )
+    ended = StateSnapshot(
+        call=CallState.ENDED,
+        identity=IdentityState.UNVERIFIED,
+        promise=PromiseState.NONE,
+    )
+    asyncio.run(
+        ledger.set_ended_operator(
+            call_id="call-001",
+            ts=NOW + timedelta(seconds=1),
+            reason="test ending",
+            state=ended,
+        )
+    )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="terminal call cannot accept safe_utterance detail",
+    ):
+        connection.execute(
+            """
+            INSERT INTO safe_utterances (
+                call_id, seq, speaker, guard_result, speech_text
+            ) VALUES (?, ?, 'agent', 'allowed', 'fabricated after terminal')
+            """,
+            ("call-001", orphan_seq),
+        )
+    assert connection.execute("SELECT COUNT(*) FROM safe_utterances").fetchone()[0] == 0
 
 
 def test_database_prevents_two_active_calls_for_one_case(

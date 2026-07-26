@@ -94,6 +94,27 @@ describe('ledger-derived operator view', () => {
 		expect(view.complete).toBe(true);
 	});
 
+	test('keeps timing diagnostics distinct from persisted safe output', () => {
+		const view = buildOperatorView(
+			[
+				event(1, 'utterance', {
+					speaker: 'agent',
+					text: 'Aapka reviewed safe line.'
+				}),
+				event(2, 'diagnostic', {
+					component: 'turn_timing',
+					reason: 'turn_timing:stt_ms=10;llm_ms=20;tts_ms=30;total_ms=60'
+				})
+			],
+			'live'
+		);
+
+		expect(view.latestUtterance).toBe('Aapka reviewed safe line.');
+		expect(view.latestSpeaker).toBe('agent');
+		expect(view.evidence.at(-1)?.label).toBe('DIAGNOSTIC');
+		expect(view.evidence.at(-1)?.detail).toContain('turn_timing:');
+	});
+
 	test('shows exactly one actionable alert when the event stream drops', () => {
 		const view = buildOperatorView([], 'degraded');
 

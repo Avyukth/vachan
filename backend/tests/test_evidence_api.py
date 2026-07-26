@@ -7,12 +7,20 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
 from app.db import EvidenceLedger, migrate_schema
 from app.evidence import PERSISTED_LEDGER_SOURCE, read_evidence_events, router
+from app.guard import (
+    SAFE_OUTPUT_LINE,
+    GuardedSpeech,
+    OutputBlockedEvent,
+    OutputGuardContext,
+    guard_for_tts,
+)
 from app.seeds import RAKESH_CASE, reset_and_reseed_demo_cases
 from app.states import CallState, IdentityState, PromiseState
 from app.tools import ToolDecision, ToolName
@@ -195,6 +203,122 @@ def test_backend_boundary_exposes_only_redacted_verification_and_guard_metadata(
     assert "blocked draft" not in serialized.casefold()
     for forbidden in ("14", "4729", "four seven two nine"):
         assert forbidden not in serialized
+    ledger.close()
+
+
+def test_safe_utterance_projection_uses_typed_persisted_text_not_timing_placeholder() -> None:
+    ledger = _ledger()
+    confirmed = _state(identity=IdentityState.CONFIRMED)
+    safe_text = "Aapka reviewed promise read-back taiyar hai."
+    asyncio.run(
+        ledger.append_safe_utterance(
+            call_id=CALL_ID,
+            ts=datetime.now(UTC),
+            speech=GuardedSpeech(speech_text=safe_text, allowed=True),
+            state=confirmed,
+        )
+    )
+    asyncio.run(
+        ledger.append_event(
+            call_id=CALL_ID,
+            ts=datetime.now(UTC),
+            event_type=LedgerEventType.TURN_TIMING,
+            state_before=confirmed,
+            state_after=confirmed,
+            redacted_reason="turn_timing:stt_ms=10;llm_ms=20;tts_ms=30;total_ms=60",
+        )
+    )
+
+    projected = read_evidence_events(ledger, CALL_ID)
+
+    assert [event.type.value for event in projected] == ["utterance", "diagnostic"]
+    assert projected[0].payload["speaker"] == "agent"
+    assert projected[0].payload["text"] == safe_text
+    assert projected[1].payload["component"] == "turn_timing"
+    assert all("Turn timing evidence recorded." not in str(event.payload) for event in projected)
+    ledger.close()
+
+
+def test_guard_block_projects_only_the_fixed_safe_replacement() -> None:
+    ledger = _ledger()
+    verifying = _state(identity=IdentityState.VERIFYING)
+    private_marker = "PRIVATE-MARKER loan balance 47,382"
+    blocked: list[OutputBlockedEvent] = []
+    guarded = guard_for_tts(
+        private_marker,
+        OutputGuardContext.from_case(
+            RAKESH_CASE,
+            identity_state=IdentityState.VERIFYING,
+            promise_state=PromiseState.NONE,
+        ),
+        record_block=blocked.append,
+    )
+    assert guarded.speech_text == SAFE_OUTPUT_LINE
+    assert blocked == [guarded.blocked_event]
+    asyncio.run(
+        ledger.append_event(
+            call_id=CALL_ID,
+            ts=datetime.now(UTC),
+            event_type=blocked[0].event_type,
+            state_before=verifying,
+            state_after=verifying,
+            redacted_reason=blocked[0].redacted_reason,
+        )
+    )
+    asyncio.run(
+        ledger.append_safe_utterance(
+            call_id=CALL_ID,
+            ts=datetime.now(UTC),
+            speech=guarded,
+            state=verifying,
+        )
+    )
+
+    projected = read_evidence_events(ledger, CALL_ID)
+    serialized = json.dumps(
+        [event.model_dump(mode="json") for event in projected],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+    assert [event.type.value for event in projected] == ["guard_block", "utterance"]
+    assert projected[1].payload["guard_result"] == "fixed_fallback"
+    assert projected[1].payload["text"] == SAFE_OUTPUT_LINE
+    assert "text" not in projected[0].payload
+    assert private_marker not in serialized
+    assert "47,382" not in serialized
+    ledger.close()
+
+
+def test_safe_utterance_event_without_typed_detail_fails_closed() -> None:
+    ledger = _ledger()
+    snapshot = _state()
+    snapshot_json = json.dumps(
+        {
+            "call": snapshot.call.value,
+            "identity": snapshot.identity.value,
+            "promise": snapshot.promise.value,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    ledger.connection.execute(
+        """
+        INSERT INTO events (
+            call_id, seq, ts, type, state_before, state_after, redacted_reason
+        ) VALUES (?, 1, ?, ?, ?, ?, 'injected_missing_detail')
+        """,
+        (
+            CALL_ID,
+            datetime.now(UTC).isoformat(),
+            LedgerEventType.SAFE_UTTERANCE.value,
+            snapshot_json,
+            snapshot_json,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="missing its typed detail row"):
+        read_evidence_events(ledger, CALL_ID)
     ledger.close()
 
 

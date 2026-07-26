@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from app.controller import ControllerTurn, DialogueController
-from app.db import EvidenceLedger
+from app.contracts import LedgerEventType
+from app.controller import ControllerClosedError, ControllerTurn, DialogueController
+from app.db import EvidenceLedger, TerminalEvidenceConflict
 from app.llm import (
     MAX_RESPONSE_TOKENS,
     LLMIntegrationError,
@@ -219,6 +220,8 @@ class VoiceCallBinding:
             except SarvamTextToSpeechError:
                 await self._end_technical_locked("tts_unavailable")
                 return
+            except ControllerClosedError:
+                return
             except Exception:
                 await self._end_technical_locked("backend_failure")
                 return
@@ -229,12 +232,20 @@ class VoiceCallBinding:
                 self._stt_ms + controller_ms,
                 self._stt_ms + llm_ms + tts_ms,
             )
-            await self._record_timing(
-                stt_ms=self._stt_ms,
-                llm_ms=llm_ms,
-                tts_ms=tts_ms,
-                total_ms=total_ms,
-            )
+            if turn.disposition is None:
+                if not self.is_call_active():
+                    return
+                try:
+                    await self._record_timing(
+                        stt_ms=self._stt_ms,
+                        llm_ms=llm_ms,
+                        tts_ms=tts_ms,
+                        total_ms=total_ms,
+                    )
+                except TerminalEvidenceConflict:
+                    return
+                if not self.is_call_active():
+                    return
             event = self._browser_turn(
                 turn,
                 kind=MediaFrameKind.TURN,
@@ -329,7 +340,7 @@ class VoiceCallBinding:
         await self.controller.ledger.append_event(
             call_id=self.call_id,
             ts=datetime.now(UTC),
-            event_type="TURN_TIMING",
+            event_type=LedgerEventType.TURN_TIMING,
             state_before=snapshot,
             state_after=snapshot,
             redacted_reason=reason,

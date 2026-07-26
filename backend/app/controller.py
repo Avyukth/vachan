@@ -25,7 +25,7 @@ from app.actions import (
 )
 from app.context_isolation import PromptMessage, PromptRole, build_llm_context
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
-from app.db import EvidenceLedger, TerminalDispositionConflict
+from app.db import EvidenceLedger, TerminalDispositionConflict, TerminalEvidenceConflict
 from app.gated_tools import GatedToolExecutor, ToolFacts
 from app.guard import OutputBlockedEvent, OutputGuardContext, classify_block, guard_for_tts
 from app.handover import HandoverBoundary, HandoverOutcome
@@ -377,12 +377,13 @@ class DialogueController:
 
     async def _speak(self, draft: str) -> tuple[str, JsonObject]:
         blocked: list[OutputBlockedEvent] = []
+        guarded_snapshot = self.snapshot
         guarded = guard_for_tts(
             draft,
             OutputGuardContext.from_case(
                 self.case,
-                identity_state=self.snapshot.identity,
-                promise_state=self.snapshot.promise,
+                identity_state=guarded_snapshot.identity,
+                promise_state=guarded_snapshot.promise,
                 normalized_promise_dates=(
                     (self._promise.candidate.date_iso,)
                     if self._promise.candidate is not None
@@ -394,6 +395,17 @@ class DialogueController:
         for event in blocked:
             await self._record_guard_block(event)
         audio = await self.sarvam.synthesize(guarded.speech_text)
+        try:
+            await self.ledger.append_safe_utterance(
+                call_id=self.call_id,
+                ts=self.clock(),
+                speech=guarded,
+                state=guarded_snapshot,
+            )
+        except TerminalEvidenceConflict as error:
+            raise ControllerClosedError(
+                "call ended before guarded speech evidence could persist"
+            ) from error
         self.history = (
             *self.history,
             PromptMessage(PromptRole.ASSISTANT, guarded.speech_text),
@@ -800,6 +812,8 @@ class DialogueController:
         amount_minor: int | None,
         date_phrase: str | None,
     ) -> str:
+        if self.disposition is not None:
+            raise ControllerClosedError("terminal call cannot correct a promise")
         if amount_minor is None and date_phrase is None:
             raise await self._invalid_promise_action(
                 ToolName.CORRECT_PROMISE_CANDIDATE,

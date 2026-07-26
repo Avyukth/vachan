@@ -300,3 +300,24 @@ def build_llm_context(
         ),
         contains_private_account_context=True,
     )
+
+
+def build_post_demotion_context(
+    *,
+    call_state: CallState,
+    identity_state: IdentityState,
+    promise_state: PromiseState,
+    case: MockCaseSeed,
+    current_utterance: str,
+) -> LLMContext:
+    """Build a new-speaker prompt with no channel for pre-demotion history."""
+    if identity_state is IdentityState.CONFIRMED:
+        raise ContextIsolationViolation("post-demotion context requires a locked identity state")
+    return build_llm_context(
+        call_state=call_state,
+        identity_state=identity_state,
+        promise_state=promise_state,
+        case=case,
+        current_utterance=current_utterance,
+        history=(),
+    )

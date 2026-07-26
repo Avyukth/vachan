@@ -11,6 +11,7 @@ from app.context_isolation import (
     PromptRole,
     available_tools_for_state,
     build_llm_context,
+    build_post_demotion_context,
 )
 from app.seeds import RAKESH_CASE
 from app.states import CallState, IdentityState, PromiseState
@@ -174,3 +175,27 @@ def test_tool_visibility_is_derived_from_all_three_state_machines() -> None:
         identity_state=IdentityState.CONFIRMED,
         promise_state=PromiseState.READ_BACK,
     ) == (ToolName.END_CALL,)
+
+
+def test_post_demotion_context_has_no_history_channel_or_private_context() -> None:
+    context = build_post_demotion_context(
+        call_state=CallState.ACTIVE,
+        identity_state=IdentityState.UNVERIFIED,
+        promise_state=PromiseState.COMMITTED,
+        case=RAKESH_CASE,
+        current_utterance="Balance 47,382 hai kya?",
+    )
+    payload = json.dumps(context.as_api_messages(), ensure_ascii=False)
+
+    assert len(context.messages) == 3
+    assert context.contains_private_account_context is False
+    assert RAKESH_CASE.account.lender_name not in payload
+    assert "47,382" not in payload
+    with pytest.raises(ContextIsolationViolation, match="locked identity"):
+        build_post_demotion_context(
+            call_state=CallState.ACTIVE,
+            identity_state=IdentityState.CONFIRMED,
+            promise_state=PromiseState.COMMITTED,
+            case=RAKESH_CASE,
+            current_utterance="hello",
+        )

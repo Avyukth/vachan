@@ -89,9 +89,17 @@ limitation only after its named bead is closed with an exact record of what was 
 - `sarvam-1bu`: the scripted controller proof now uses the terminal-safe sequence: read-back,
   handover/refusal before affirmation, fresh two-value verification when Rakesh returns, a revised
   read-back, and explicit “haan” as the sole terminal `PROMISE_CONFIRMED`. Post-terminal turns are
-  rejected before STT. The bead remains open for its reopened public-boundary duplicate/finality
-  proofs and the required three physical rehearsals; do not present the scripted proof as
-  human/live-call evidence.
+  rejected before STT, and the public-boundary duplicate/finality proofs are closed. The bead
+  remains open only for the required three physical rehearsals; do not present the scripted proof
+  as human/live-call evidence.
+- `sarvam-ztf`: the untracked demo-audio generator/asset work currently places handover and spouse
+  turns after the terminal promise beat. That media sequence is not shipped evidence and must not
+  be used for rehearsal or submission unless the scripts are reordered to the terminal-safe
+  sequence and the bead closes with its source regression.
+- `sarvam-h31`: the literal repository-wide backend Ruff/format gate remains red in those
+  untracked audio-generator scripts and is blocked on `sarvam-ztf`. This is not waived by passing
+  application-only checks; close it before freeze or retain this limitation and do not declare the
+  mandatory backend quality gate green.
 
 If any item above remains open at feature freeze, keep it in the submitted limitations. A
 disclosed limitation is preferable to a claim that the running build cannot prove.
@@ -129,9 +137,11 @@ Do not submit until each item has an owner and an explicit result:
       context/memory experiments remain explicitly excluded from shipped coverage.
 - [ ] Every open fix-or-disclose bead above is either closed with passing tests or retained as a
       limitation.
-- [ ] `sarvam-1bu` retains the landed terminal-safe sequence, its reopened public-boundary
-      duplicate/finality proofs pass, and three physical rehearsals complete without a
-      post-terminal caller turn.
+- [ ] `sarvam-1bu` retains the landed terminal-safe sequence and three physical rehearsals
+      complete without a post-terminal caller turn.
+- [ ] `sarvam-ztf` closes with both audio generators in terminal-safe order before any generated
+      media is used as rehearsal or submission evidence.
+- [ ] `sarvam-h31` closes with literal repository-wide backend Ruff and format checks green.
 - [ ] Replay screens remain visibly labeled `REPLAY`; no replay event is described as live.
 - [ ] A human completes the `sarvam-r9i` venue checks: production preview on port 3000, persistent
       “Allow on every visit” mic permission for that exact origin, wired headphones, pre-approved

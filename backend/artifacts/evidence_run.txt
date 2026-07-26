@@ -1,5 +1,5 @@
 === VACHAN EVIDENCE RUN ===
-ts: 2026-07-26T13:27:33.334413+05:30  transport: streaming_pcm16_ws  build: 7707049-dirty
+ts: 2026-07-26T14:22:48.413554+05:30  transport: streaming_pcm16_ws  build: f9fd606-dirty
 matrix (offline): 13/13
 audio e2e (real STT): 3/3
 01  01-correct-verification-unlocks-account    PASS  input: typed-script
@@ -14,7 +14,7 @@ audio e2e (real STT): 3/3
 10  10-duplicate-affirmative-keeps-one-promise-row PASS  input: typed-script
 11  11-stt-failure-ends-technical-without-business-rows PASS  input: typed-script
 12  12-takeover-cancels-pending-work-and-never-speaks PASS  input: typed-script
-13  13-contact-cap-blocks-before-call-row      PASS  input: typed-script
+13  13-contact-cap-blocks-real-start-before-call-row PASS  input: typed-script
 A1  borrower-promise-offer                     PASS  input: prerecorded-wav source:synthetic-hi-IN
 A2  spouse-pressure                            PASS  input: prerecorded-wav source:synthetic-hi-IN
 A3  promise-correction                         PASS  input: prerecorded-wav source:synthetic-hi-IN

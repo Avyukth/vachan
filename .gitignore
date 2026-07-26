@@ -1,0 +1,72 @@
+# ============================================================
+# Vachan — .gitignore (Python/uv backend + SvelteKit/bun frontend)
+# ============================================================
+
+# ---------- Secrets & local tool configs (contain bearer tokens) ----------
+.env
+.env.*
+!.env.example
+codex.mcp.json
+cursor.mcp.json
+factory.mcp.json
+gemini.mcp.json
+windsurf.mcp.json
+opencode.json
+.vscode/mcp.json
+.vscode/*.bak
+.vscode/.mcp.json.*
+.codex/
+.gemini/
+.claude/settings.local.json
+
+# ---------- Python (uv) ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.venv/
+venv/
+.python-version.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---------- SvelteKit / Vite / bun ----------
+node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.vercel/
+frontend/.output/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+*.tsbuildinfo
+
+# ---------- Runtime artifacts (never history) ----------
+backend/vachan.db
+backend/vachan.db-*
+*.sqlite-journal
+*.db-wal
+*.db-shm
+
+# ---------- beads: JSONL is the committed source of truth ----------
+.beads/beads.db
+.beads/*.db-*
+.bv/
+
+# ---------- Local orchestration / session state ----------
+.ntm/
+
+# ---------- OS / editor ----------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/

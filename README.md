@@ -15,8 +15,9 @@ code-mix, over a browser-mic demo page supervised by a human operator (Priya) wh
 three moves per call: open case, start, inspect outcome.
 
 **The thesis:** in Indian consumer collections, the scarce resource is not pressure — it is
-trust, in every direction at once. The borrower can't trust callers (₹22,495 crore lost to
-voice scams in 2025 — a suspicious borrower is being *rational*). The lender can't trust who
+trust, in every direction at once. The borrower can't trust callers: citizens reported
+[₹22,495 crore in cyber-fraud losses in 2025](https://www.pib.gov.in/PressReleasePage.aspx?PRID=2226441&lang=1&reg=3),
+across all cyber-fraud categories — not as a voice-scam subtotal. The lender can't trust who
 answered (shared handsets are the norm; the spouse learning the debt exists is the harm — and a
 compliance violation). The lender can't trust promises ("haan, kal kar dunga" — fake
 promises-to-pay poison dialler queues). The regulator can't trust call logs. Vachan attacks all
@@ -32,15 +33,11 @@ structural opposite; see [Key Differences](#key-differences-from-the-sarvam-cook
 (typed intent JSON), Bulbul v3 (TTS) — as the voice layer under a policy engine it cannot
 override.
 
-## The Problem, In Numbers
+## Problem Signal and Product Metric
 
 | Fact | Figure |
 |---|---|
-| India retail loan book | ₹170.2 lakh crore |
-| Personal-loan accounts (3-year growth) | 73M → 146M |
-| Gross NPAs | ~₹4.3 lakh crore |
-| Collections economics | Commission-based, 5–20% of recovery |
-| Lost to voice/cyber scams (2025) | ₹22,495 crore |
+| Reported cyber-fraud losses (2025; all categories) | ₹22,495 crore ([Ministry of Home Affairs / PIB](https://www.pib.gov.in/PressReleasePage.aspx?PRID=2226441&lang=1&reg=3)) |
 | Honest metric proposed | **Kept-promise rate** (not promise rate) + third-party disclosures per 1,000 calls (target: zero) |
 
 ## Architecture
@@ -82,8 +79,8 @@ From the post-duel product plan (`VACHAN_PLAN_V2.md`), with honest build status
 (`VACHAN_MVP_V2.md` governs what ships today):
 
 `MVP core` below means the deterministic component and its offline safety tests are implemented.
-It does **not** mean the real spoken-call or operator journey is complete: those release gates
-remain tracked by `sarvam-v8o` and `sarvam-ch1`.
+Spoken-call and operator release evidence are tracked separately in `sarvam-v8o` and
+`sarvam-ch1`; use `br show` for their current status because completion audits can reopen a gate.
 
 | Mechanic | What it does | Status |
 |---|---|---|
@@ -272,4 +269,4 @@ flagging is safe; hiding origin is auto-disqualification). Built from zero on th
 | `AGENTS.md` | Operating manual for AI coding agents (safety rules, tooling, stack) |
 | `DUELING_WIZARDS_REPORT.md` | How the plan was adversarially derived (3-model duel) |
 | `vachan_product.drawio` | Architecture, call-flow, and state-machine diagrams |
-| `.beads/` | 53-bead implementation graph with dependencies |
+| `.beads/` | Implementation graph with dependencies; query live counts with `br stats` |

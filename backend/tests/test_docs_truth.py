@@ -114,9 +114,19 @@ def test_readme_distinguishes_synthetic_stt_from_pending_live_proof() -> None:
     ):
         assert required in markdown, f"README is missing honesty marker: {required}"
 
-    assert re.search(r"\(\d+\s+beads\b", markdown, re.IGNORECASE) is None, (
+    assert re.search(r"\b\d+(?:\s+|-)+beads?\b", markdown, re.IGNORECASE) is None, (
         "README hard-codes a bead count; direct readers to br stats instead"
     )
+    assert "use `br show` for their current status" in markdown
+
+
+def test_readme_does_not_mislabel_total_cyber_fraud_as_voice_loss() -> None:
+    markdown = ROOT_README.read_text(encoding="utf-8")
+
+    for stale_claim in ("voice scams in 2025", "voice/cyber scams"):
+        assert stale_claim not in markdown
+    assert "all cyber-fraud categories — not as a voice-scam subtotal" in markdown
+    assert "PRID=2226441" in markdown
 
 
 def test_readme_does_not_hard_code_the_collected_matrix_size() -> None:

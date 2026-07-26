@@ -12,8 +12,10 @@ outcomes, and the evidence ledger.
 
 The current transport is streaming mono PCM16 audio at 16 kHz over a browser WebSocket. The
 backend uses Sarvam's voice stack for speech recognition, typed language-model decisions, and
-speech synthesis. The stage path is `http://localhost:3000`; the public submission link is
-`https://sarvam.pathshala.dev`.
+speech synthesis. The stage path is the production frontend build served at
+`http://localhost:3000` with `bun run preview --port 3000`; rehearsals and the stage demo must
+not use the Vite development server because hot reload can reset live operator state. The public
+submission link is `https://sarvam.pathshala.dev`.
 
 ## Borderline starting point — explicitly flagged
 
@@ -87,8 +89,9 @@ limitation only after its named bead is closed with an exact record of what was 
 - `sarvam-1bu`: the scripted controller proof now uses the terminal-safe sequence: read-back,
   handover/refusal before affirmation, fresh two-value verification when Rakesh returns, a revised
   read-back, and explicit “haan” as the sole terminal `PROMISE_CONFIRMED`. Post-terminal turns are
-  rejected before STT. The required three physical rehearsals remain a separate honest gate; do
-  not present the scripted proof as human/live-call evidence.
+  rejected before STT. The bead remains open for its reopened public-boundary duplicate/finality
+  proofs and the required three physical rehearsals; do not present the scripted proof as
+  human/live-call evidence.
 
 If any item above remains open at feature freeze, keep it in the submitted limitations. A
 disclosed limitation is preferable to a claim that the running build cannot prove.
@@ -126,12 +129,14 @@ Do not submit until each item has an owner and an explicit result:
       context/memory experiments remain explicitly excluded from shipped coverage.
 - [ ] Every open fix-or-disclose bead above is either closed with passing tests or retained as a
       limitation.
-- [ ] `sarvam-1bu` has selected one executable demo sequence and all post-terminal wording is
-      removed from the script and slides.
+- [ ] `sarvam-1bu` retains the landed terminal-safe sequence, its reopened public-boundary
+      duplicate/finality proofs pass, and three physical rehearsals complete without a
+      post-terminal caller turn.
 - [ ] Replay screens remain visibly labeled `REPLAY`; no replay event is described as live.
-- [ ] A human completes the `sarvam-r9i` venue checks: wired headphones, persistent mic permission,
-      pre-approved Keychain access, venue Wi-Fi and hotspot, sleep/volume settings, and tunnel
-      access from a phone.
+- [ ] A human completes the `sarvam-r9i` venue checks: production preview on port 3000, persistent
+      “Allow on every visit” mic permission for that exact origin, wired headphones, pre-approved
+      Keychain access, venue Wi-Fi and hotspot, sleep/volume settings, and tunnel access from a
+      phone.
 - [ ] `https://sarvam.pathshala.dev` returns the running demo from a normal browser/phone user
       agent. Record the verification time; do not infer success from a default-`curl` 403.
 - [ ] The mandatory borderline-starting-point flag and all mock/demo labels survive the final

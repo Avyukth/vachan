@@ -85,12 +85,6 @@ limitation only after its named bead is closed with an exact record of what was 
 - `sarvam-jg9`: the operator console's replay is explicitly labeled, but the live SQLite-backed
   `/api/evidence/{call_id}` journey is not yet mounted. Do not describe replay data or locally
   appended UI events as a live ledger stream.
-- `sarvam-vmo.1`: evidence rows reject ordinary update/delete operations and sanctioned reset is
-  scoped and audited in normal operation, but trusted same-process code holding the raw SQLite
-  connection can mutate the ledger object's private reset flag. No public UI or API exposes that
-  attribute or raw SQL, but the reset capability is not unforgeable against a malicious in-process
-  caller. A 22-test closure/narrow-connection experiment was deliberately not shipped after
-  feature freeze because it changed the shared persistence boundary.
 - `sarvam-bb8.1`: the atomic promise-evidence applier landed in `0f13db2`, while full acceptance
   and closeout remain pending. Do not claim every promise transition is proven atomic yet.
 - `sarvam-bfo.1`: terminal disposition compare-and-set is atomic, but a promise can be durably

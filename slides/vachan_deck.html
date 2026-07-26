@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vachan — Final Presentation</title>
+<style>
+  :root{
+    --ground:#101214; --panel:#191D21; --panel-hi:#1F242A;
+    --seam:rgba(148,163,184,.14); --seam-soft:rgba(148,163,184,.055);
+    --bone:#E7E5E0; --steel:#8A939E; --rust:#B4553F; --green:#4C9A6A; --amber:#D97B29;
+    --sans:"Avenir Next","Helvetica Neue",Helvetica,system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{background:#08090b;display:grid;place-items:center;font-family:var(--sans);
+    overflow:hidden}
+
+  .deck{width:min(100vw,177.78vh);aspect-ratio:16/9;position:relative;container-type:size}
+  .slide{
+    position:absolute;inset:0;background:
+      repeating-linear-gradient(0deg,var(--seam-soft) 0 1px,transparent 1px 6.25cqw),
+      repeating-linear-gradient(90deg,var(--seam-soft) 0 1px,transparent 1px 6.25cqw),
+      var(--ground);
+    color:var(--bone);border:1px solid var(--seam);
+    padding:3.4cqw 4.6cqw 3cqw;display:none;flex-direction:column;overflow:hidden}
+  .slide.active{display:flex}
+
+  /* shared chrome */
+  .bar{display:flex;justify-content:space-between;align-items:center;
+    border-bottom:1px solid var(--seam);padding-bottom:1.3cqw}
+  .mark{font-weight:700;font-size:1.8cqw;letter-spacing:.14em}
+  .mark small{color:var(--steel);font-weight:500;font-size:1.05cqw;letter-spacing:.2em;
+    margin-left:1cqw;vertical-align:.22cqw}
+  .ribbon{display:flex;gap:.5cqw;align-items:center;font-family:var(--mono);
+    font-size:.95cqw;letter-spacing:.12em}
+  .chip{border:1px solid var(--seam);padding:.4cqw .85cqw;color:var(--steel)}
+  .chip.rust{border-left:.26cqw solid var(--rust);color:var(--rust)}
+  .chip.green{border-left:.26cqw solid var(--green);color:var(--green)}
+  .chip.amber{border-left:.26cqw solid var(--amber);color:var(--amber)}
+  .arrow{color:var(--steel);opacity:.6}
+  .kicker{font-family:var(--mono);font-size:1.02cqw;letter-spacing:.28em;color:var(--rust);
+    text-transform:uppercase;margin:1.9cqw 0 .9cqw}
+  h1{font-size:3.9cqw;line-height:1.05;font-weight:700;letter-spacing:-.018em;
+    text-wrap:balance}
+  h2{font-size:3.1cqw;line-height:1.07;font-weight:700;letter-spacing:-.015em;
+    text-wrap:balance}
+  .sub{margin-top:1cqw;font-size:1.5cqw;line-height:1.45;color:var(--steel);max-width:74cqw}
+  .sub b,.li b{color:var(--bone);font-weight:600}
+  .mono{font-family:var(--mono)}
+  .panel{background:var(--panel);border:1px solid var(--seam);position:relative}
+  .panel::after{content:"";position:absolute;top:0;right:0;width:1cqw;height:1cqw;
+    border-left:1px solid var(--seam);border-bottom:1px solid var(--seam);
+    background:var(--panel-hi)}
+  .foot{margin-top:auto;padding-top:1.4cqw;display:flex;justify-content:space-between;
+    align-items:center;font-family:var(--mono);font-size:.95cqw;color:var(--steel);
+    letter-spacing:.18em;text-transform:uppercase}
+  .foot .amberline{color:var(--amber);letter-spacing:.06em;text-transform:none;
+    font-family:var(--sans);font-weight:600;font-size:1.25cqw}
+
+  /* entrance animation, replayed per activation */
+  @media (prefers-reduced-motion: no-preference){
+    .active .rise{opacity:0;transform:translateY(1.1cqw);
+      animation:rise .5s cubic-bezier(.2,.7,.2,1) forwards}
+    .active .rise:nth-of-type(1){animation-delay:.06s}
+    .active .rise:nth-of-type(2){animation-delay:.16s}
+    .active .rise:nth-of-type(3){animation-delay:.26s}
+    .active .rise:nth-of-type(4){animation-delay:.36s}
+    .active .rise:nth-of-type(5){animation-delay:.46s}
+    .active .rise:nth-of-type(6){animation-delay:.56s}
+    @keyframes rise{to{opacity:1;transform:none}}
+  }
+
+  /* S1 title */
+  .s1 .stage{flex:1;display:flex;flex-direction:column;justify-content:center}
+  .s1 .bigmark{font-size:9cqw;font-weight:700;letter-spacing:.06em;line-height:1}
+  .s1 .bigmark span{color:var(--amber)}
+  .s1 .dev{font-size:3.4cqw;color:var(--steel);margin-top:.4cqw;font-weight:500}
+  .s1 .tag{margin-top:2.2cqw;font-size:2cqw;line-height:1.4;max-width:64cqw;
+    text-wrap:balance}
+  .s1 .tag em{font-style:normal;color:var(--amber)}
+  .s1 .meta{margin-top:2.6cqw;font-family:var(--mono);font-size:1.1cqw;color:var(--steel);
+    letter-spacing:.18em;text-transform:uppercase}
+
+  /* S2 problem grid */
+  .grid4{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+    gap:1.2cqw;min-height:0;margin-top:1.6cqw}
+  .u{border-left:.35cqw solid var(--rust);padding:1.3cqw 1.6cqw;display:flex;
+    flex-direction:column;gap:.65cqw;min-height:0}
+  .u-label{font-family:var(--mono);font-size:1.15cqw;letter-spacing:.26em;color:var(--rust);
+    text-transform:uppercase;font-weight:600}
+  .u-stat{font-family:var(--mono);font-size:1.95cqw;font-weight:600;line-height:1.1;
+    font-variant-numeric:tabular-nums}
+  .u-stat small{font-size:1.02cqw;color:var(--steel);font-weight:400}
+  .u-line{font-size:1.22cqw;line-height:1.4;color:var(--steel)}
+  .u-line b{color:var(--bone)}
+
+  /* S3 layers */
+  .layers{flex:1;display:grid;grid-template-columns:1.15fr .85fr;gap:1.6cqw;
+    margin-top:1.8cqw;min-height:0}
+  .layerlist{display:flex;flex-direction:column;gap:1.1cqw}
+  .layer{border-left:.35cqw solid var(--green);padding:1.15cqw 1.5cqw}
+  .layer .n{font-family:var(--mono);font-size:1cqw;color:var(--green);letter-spacing:.2em}
+  .layer .t{font-size:1.55cqw;font-weight:600;margin-top:.25cqw}
+  .layer .d{font-size:1.2cqw;color:var(--steel);margin-top:.3cqw;line-height:1.4}
+  .machines{padding:1.5cqw 1.7cqw;display:flex;flex-direction:column;gap:1.2cqw}
+  .machines h3{font-family:var(--mono);font-size:1.05cqw;letter-spacing:.24em;
+    color:var(--steel);text-transform:uppercase}
+  .sm{font-family:var(--mono);font-size:1.12cqw;line-height:2;color:var(--steel)}
+  .sm b{color:var(--bone);font-weight:600}
+  .sm .g{color:var(--green)} .sm .r{color:var(--rust)} .sm .a{color:var(--amber)}
+
+  /* S4 flow strip */
+  .flow{flex:1;display:grid;grid-template-columns:repeat(6,1fr);gap:1cqw;
+    margin-top:1.8cqw;min-height:0}
+  .step{padding:1.2cqw 1.2cqw;display:flex;flex-direction:column;gap:.7cqw;min-height:0}
+  .step .no{font-family:var(--mono);font-size:.95cqw;color:var(--steel);letter-spacing:.2em}
+  .step .name{font-family:var(--mono);font-size:1.18cqw;font-weight:600;letter-spacing:.06em}
+  .step .desc{font-size:1.08cqw;line-height:1.4;color:var(--steel)}
+  .step .desc b{color:var(--bone)}
+  .step.rust{border-top:.3cqw solid var(--rust)}
+  .step.green{border-top:.3cqw solid var(--green)}
+  .step.amber{border-top:.3cqw solid var(--amber)}
+  .step.plain{border-top:.3cqw solid var(--seam)}
+
+  /* S5 demo table */
+  .demo{flex:1;margin-top:1.7cqw;display:flex;flex-direction:column;gap:.55cqw;min-height:0}
+  .beat{display:grid;grid-template-columns:7cqw 1fr 24cqw;gap:1.4cqw;align-items:baseline;
+    border-bottom:1px solid var(--seam);padding:.62cqw .4cqw}
+  .beat .t{font-family:var(--mono);font-size:1.15cqw;color:var(--amber);
+    font-variant-numeric:tabular-nums}
+  .beat .what{font-size:1.28cqw;line-height:1.35}
+  .beat .what b{font-weight:600}
+  .beat .proof{font-family:var(--mono);font-size:.98cqw;color:var(--steel);text-align:right}
+
+  /* S6 delta table */
+  .delta{flex:1;margin-top:1.7cqw;display:grid;
+    grid-template-columns:16cqw 1fr 1.2fr;gap:0;min-height:0;align-content:start}
+  .delta>div{padding:.85cqw 1.2cqw;border-bottom:1px solid var(--seam);font-size:1.22cqw;
+    line-height:1.35}
+  .delta .h{font-family:var(--mono);font-size:1cqw;letter-spacing:.2em;color:var(--steel);
+    text-transform:uppercase;border-bottom:1px solid var(--seam)}
+  .delta .dim{color:var(--steel)}
+  .delta .them{color:var(--rust)}
+  .delta .us b{color:var(--bone)}
+
+  /* S7 evidence */
+  .ev{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:1.6cqw;margin-top:1.8cqw;
+    min-height:0}
+  .ev .col{display:flex;flex-direction:column;gap:1.1cqw;min-height:0}
+  .dispo{display:flex;flex-wrap:wrap;gap:.7cqw}
+  .runner{padding:1.3cqw 1.5cqw;font-family:var(--mono);font-size:1.05cqw;line-height:1.75;
+    color:var(--steel);flex:1;min-height:0}
+  .runner .ok{color:var(--green)} .runner .bad{color:var(--rust)}
+  .runner .hd{color:var(--bone)}
+  .bigstat{padding:1.3cqw 1.5cqw}
+  .bigstat .n{font-family:var(--mono);font-size:2.6cqw;font-weight:600}
+  .bigstat .n span{color:var(--amber)}
+  .bigstat .d{font-size:1.15cqw;color:var(--steel);margin-top:.3cqw;line-height:1.4}
+
+  /* S8 impact/close */
+  .imp{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:1.6cqw;margin-top:1.8cqw;
+    min-height:0}
+  .metric{border-left:.35cqw solid var(--amber);padding:1.3cqw 1.6cqw}
+  .metric .n{font-family:var(--mono);font-size:2cqw;font-weight:600}
+  .metric .d{font-size:1.18cqw;color:var(--steel);margin-top:.35cqw;line-height:1.42}
+  .metric .d b{color:var(--bone)}
+  .road{padding:1.3cqw 1.6cqw}
+  .road h3{font-family:var(--mono);font-size:1.02cqw;letter-spacing:.24em;color:var(--steel);
+    text-transform:uppercase;margin-bottom:.9cqw}
+  .li{font-size:1.25cqw;line-height:1.55;color:var(--steel);padding-left:1.2cqw;
+    position:relative;margin-bottom:.55cqw}
+  .li::before{content:"";position:absolute;left:0;top:.55cqw;width:.45cqw;height:.45cqw;
+    background:var(--steel)}
+  .li.now::before{background:var(--green)}
+  .closer{margin-top:1.6cqw;border:1px solid var(--seam);border-left:.35cqw solid var(--amber);
+    background:var(--panel);padding:1.2cqw 1.8cqw;font-size:1.9cqw;font-weight:600;
+    text-wrap:balance}
+  .closer em{font-style:normal;color:var(--amber)}
+
+  /* nav chrome */
+  .counter{position:fixed;bottom:1.4vh;right:1.6vw;font-family:var(--mono);
+    font-size:1.4vh;color:var(--steel);letter-spacing:.2em;opacity:.7;z-index:5}
+  .hint{position:fixed;bottom:1.4vh;left:1.6vw;font-family:var(--mono);font-size:1.3vh;
+    color:var(--steel);letter-spacing:.12em;opacity:.45;z-index:5}
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- S1 · TITLE -->
+  <section class="slide s1">
+    <header class="bar rise">
+      <div class="mark">SARVAM EPOCH BUILDATHON<small>26 JUL 2026</small></div>
+      <div class="ribbon"><span class="chip">UNKNOWN</span><span class="arrow">→</span>
+        <span class="chip rust">THIRD_PARTY</span><span class="arrow">→</span>
+        <span class="chip green">CONFIRMED</span></div>
+    </header>
+    <div class="stage">
+      <div class="bigmark rise">VACHAN<span>.</span></div>
+      <div class="dev rise">वचन — a promise</div>
+      <p class="tag rise">The collections voice agent where
+        <em>the safe call is the only call the system can make.</em></p>
+      <div class="meta rise">Voice Experience · Sarvam Saaras v3 + LLM + Bulbul v3 ·
+        built from zero today</div>
+    </div>
+    <div class="foot"><span>code decides · the model only speaks</span>
+      <span>sarvam.pathshala.dev</span></div>
+  </section>
+
+  <!-- S2 · PROBLEM -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>THE PROBLEM</small></div>
+      <div class="ribbon"><span class="chip rust">4U</span></div></header>
+    <div class="kicker rise">Consumer lending · collections calls</div>
+    <h2 class="rise">The call itself is the liability.</h2>
+    <div class="grid4 rise">
+      <article class="u panel"><span class="u-label">Unworkable</span>
+        <div class="u-stat">Line 1: name + amount <small>— to whoever answers</small></div>
+        <p class="u-line">Shared handsets are the norm — <b>family harm and a disclosure
+        violation in one sentence</b>. The human fix became the harassment RBI punishes.</p>
+      </article>
+      <article class="u panel"><span class="u-label">Unavoidable</span>
+        <div class="u-stat">₹170.2 L Cr <small>retail book · accounts 73M → 146M</small></div>
+        <p class="u-line">Lenders must call — <b>~₹4.3 L Cr in NPAs</b>. Borrowers must answer.
+        Compliance is mandatory. Every term compounds.</p>
+      </article>
+      <article class="u panel"><span class="u-label">Urgent</span>
+        <div class="u-stat">₹22,495 Cr <small>lost to voice scams · 2025</small></div>
+        <p class="u-line">Distrust is the <b>rational</b> response now. Fake promises poison
+        dialler queues <b>today</b>; enforcement runs this quarter.</p>
+      </article>
+      <article class="u panel"><span class="u-label">Underserved</span>
+        <div class="u-stat">0 identity checks <small>in the reference playbook</small></div>
+        <p class="u-line">BPOs scale the humans; bots scale the script.
+        <b>Nobody ships enforcement architecture.</b></p>
+      </article>
+    </div>
+    <div class="foot"><span>02 · problem</span>
+      <span class="amberline">the harm is the first sentence</span></div>
+  </section>
+
+  <!-- S3 · THESIS -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>THE THESIS</small></div>
+      <div class="ribbon"><span class="chip green">CODE-GATED</span></div></header>
+    <div class="kicker rise">One architectural decision</div>
+    <h2 class="rise">Code — not the model — decides when private data
+      and write-tools unlock.</h2>
+    <div class="layers">
+      <div class="layerlist rise">
+        <div class="layer panel"><span class="n">LAYER 1</span>
+          <div class="t">Context isolation</div>
+          <div class="d">Account data enters the LLM only at CONFIRMED —
+            the model cannot leak what it was never given.</div></div>
+        <div class="layer panel"><span class="n">LAYER 2</span>
+          <div class="t">Tool isolation</div>
+          <div class="d">read_account / commit_promise throw unless CONFIRMED.
+            Every denial is a ledger row.</div></div>
+        <div class="layer panel"><span class="n">LAYER 3</span>
+          <div class="t">Fixed templates before verification</div>
+          <div class="d">The LLM selects the reply; it never writes it.</div></div>
+        <div class="layer panel"><span class="n">LAYER 4</span>
+          <div class="t">Output guard before every utterance</div>
+          <div class="d">Multilingual blocklist. On fire: discard draft, speak a safe line,
+            log OUTPUT_BLOCKED.</div></div>
+      </div>
+      <div class="machines panel rise">
+        <div><h3>Identity — in code</h3>
+          <div class="sm">UNVERIFIED → VERIFYING → <b class="g">CONFIRMED</b><br>
+          any turn → <b class="r">THIRD_PARTY</b> · handover → relock<br>
+          never restored across calls</div></div>
+        <div><h3>Promise — event-sourced</h3>
+          <div class="sm">CANDIDATE → READ_BACK → <b class="a">COMMITTED</b><br>
+          dual-format echo · explicit yes · idempotent</div></div>
+        <div><h3>Every transition</h3>
+          <div class="sm">→ append-only <b>evidence ledger</b></div></div>
+      </div>
+    </div>
+    <div class="foot"><span>03 · thesis</span>
+      <span class="amberline">four layers, three machines, one ledger</span></div>
+  </section>
+
+  <!-- S4 · HOW IT WORKS -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>ONE CONTINUOUS CALL</small></div>
+      <div class="ribbon"><span class="chip">PRIYA: 3 ACTIONS</span>
+        <span class="chip amber">AGENT: THE REST</span></div></header>
+    <div class="kicker rise">The journey — operator Priya · borrower Rakesh · spouse Sunita</div>
+    <h2 class="rise">Six beats. Every one produces evidence.</h2>
+    <div class="flow rise">
+      <div class="step panel plain"><span class="no">01</span>
+        <span class="name">PREFLIGHT</span>
+        <p class="desc">Mic, health, <b>contact-cap</b> — blocked cases can't even Start.</p></div>
+      <div class="step panel plain"><span class="no">02</span>
+        <span class="name">BLIND GREETING</span>
+        <p class="desc">No lender, no amount, no reason. Anti-scam pledge first.</p></div>
+      <div class="step panel green"><span class="no">03</span>
+        <span class="name">VERIFY</span>
+        <p class="desc">Two values, <b>compared in code</b> — never spoken, never in the
+          prompt. Two attempts.</p></div>
+      <div class="step panel amber"><span class="no">04</span>
+        <span class="name">PROMISE</span>
+        <p class="desc">"₹1,500 — 1-5-0-0 — Friday." Read back, corrected, explicit yes,
+          <b>committed once</b>.</p></div>
+      <div class="step panel rust"><span class="no">05</span>
+        <span class="name">HANDOVER</span>
+        <p class="desc">"Lo, baat karo" — <b>demoted the same turn</b>. Sunita gets a
+          content-free callback.</p></div>
+      <div class="step panel plain"><span class="no">06</span>
+        <span class="name">EVIDENCE</span>
+        <p class="desc">One of five dispositions + an ordered timeline of every decision.</p></div>
+    </div>
+    <div class="foot"><span>04 · how it works</span>
+      <span class="amberline">refusing to disclose IS the completed job</span></div>
+  </section>
+
+  <!-- S5 · DEMO -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>LIVE DEMO · 120s</small></div>
+      <div class="ribbon"><span class="chip amber">JUDGES PLAY THE CALLERS</span></div></header>
+    <div class="kicker rise">Adversarial by design</div>
+    <h2 class="rise">One live call. Attack it.</h2>
+    <div class="demo rise">
+      <div class="beat"><span class="t">0:00</span>
+        <span class="what">Priya: preflight READY → <b>Start</b> — her 1st of 3 actions</span>
+        <span class="proof">QUEUE_GUARDED</span></div>
+      <div class="beat"><span class="t">0:10</span>
+        <span class="what">"Scam hai kya?" → anti-scam pledge, zero debt words</span>
+        <span class="proof">UNVERIFIED · templates only</span></div>
+      <div class="beat"><span class="t">0:25</span>
+        <span class="what">Two values → <b>code flips CONFIRMED</b>, tools unlock on screen</span>
+        <span class="proof">tool-unlock event</span></div>
+      <div class="beat"><span class="t">0:40</span>
+        <span class="what">"₹1,500, Friday" → dual-format read-back, absolute date</span>
+        <span class="proof">CANDIDATE → READ_BACK</span></div>
+      <div class="beat"><span class="t">1:05</span>
+        <span class="what">Explicit "haan" → <b>one committed promise</b></span>
+        <span class="proof">idempotent commit</span></div>
+      <div class="beat"><span class="t">1:15</span>
+        <span class="what">Phone handed to Sunita; she asks the balance →
+          <b>refused, content-free</b></span>
+        <span class="proof">DEMOTED · relocked</span></div>
+      <div class="beat"><span class="t">+20s</span>
+        <span class="what">Capped case: <b>Start disabled</b> — it refuses its own operator —
+          then the fresh test artifact</span>
+        <span class="proof">BLOCKED_POLICY</span></div>
+    </div>
+    <div class="foot"><span>05 · demo</span>
+      <span class="amberline">no judge input breaks this — every path ends audited</span></div>
+  </section>
+
+  <!-- S6 · DIFFERENCE -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>WHY IT'S DIFFERENT</small></div>
+      <div class="ribbon"><span class="chip">BORDERLINE FLAGGED · BUILT FROM ZERO</span></div></header>
+    <div class="kicker rise">vs the reference collection-bot playbook</div>
+    <h2 class="rise">Same APIs. Opposite architecture.</h2>
+    <div class="delta rise">
+      <div class="h">Aspect</div><div class="h">Playbook bot</div><div class="h">Vachan</div>
+      <div class="dim">Identity</div><div class="them">speaks to whoever answers</div>
+        <div class="us"><b>3-state machine in code</b> + handover demotion</div>
+      <div class="dim">Disclosure</div><div class="them">amount hardcoded in the prompt</div>
+        <div class="us"><b>context isolation</b> — model never holds the data</div>
+      <div class="dim">Promise</div><div class="them">conversational only</div>
+        <div class="us">read-back → explicit yes → <b>idempotent commit</b></div>
+      <div class="dim">Evidence</div><div class="them">none</div>
+        <div class="us"><b>append-only ledger</b> + regenerated test artifact</div>
+      <div class="dim">Failure</div><div class="them">undefined</div>
+        <div class="us"><b>fails closed</b> — technical ≠ business outcome</div>
+    </div>
+    <div class="foot"><span>06 · difference</span>
+      <span class="amberline">the delta is the disqualification-proof</span></div>
+  </section>
+
+  <!-- S7 · EVIDENCE & HONESTY -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>EVIDENCE &amp; HONESTY</small></div>
+      <div class="ribbon"><span class="chip green">AUDITABLE</span></div></header>
+    <div class="kicker rise">What we can prove, not what we claim</div>
+    <h2 class="rise">Every call ends in exactly one disposition.</h2>
+    <div class="ev">
+      <div class="col rise">
+        <div class="dispo">
+          <span class="chip green">PROMISE_CONFIRMED</span>
+          <span class="chip">CALLBACK_THIRD_PARTY</span>
+          <span class="chip">VERIFICATION_FAILED</span>
+          <span class="chip rust">ENDED_TECHNICAL</span>
+          <span class="chip rust">ENDED_OPERATOR</span>
+        </div>
+        <div class="bigstat panel">
+          <div class="n">3 <span>/</span> 47</div>
+          <div class="d">operator actions vs agent actions per call — the operator
+            <b>cannot</b> disclose, over-dial, or harass: the UI has no buttons for it.</div>
+        </div>
+        <div class="bigstat panel">
+          <div class="n">13-case matrix</div>
+          <div class="d">state machines, verification, guard, promise engine — run offline
+            on every change; audio e2e on real STT before the demo.</div>
+        </div>
+      </div>
+      <div class="runner panel rise">
+        <span class="hd">=== VACHAN EVIDENCE RUN ===</span><br>
+        ts 15:42:07 · transport REST · build 7aa4670<br>
+        01 verify-correct&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">PASS</span><br>
+        04 spouse-asks-3x&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">PASS</span> · 0 disclosures<br>
+        08 handover-relock&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">PASS</span><br>
+        09 joint-account&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="bad">FAIL</span> · shown + diagnosed<br>
+        …<br>
+        <span class="hd">regenerated minutes before this demo.
+        a typed score is not evidence — a shown failure is.</span>
+      </div>
+    </div>
+    <div class="foot"><span>07 · evidence</span>
+      <span class="amberline">least-disclosure applies to management too</span></div>
+  </section>
+
+  <!-- S8 · IMPACT / CLOSE -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>IMPACT</small></div>
+      <div class="ribbon"><span class="chip amber">PROPOSED · NOT PRETENDED</span></div></header>
+    <div class="kicker rise">Payer: the lender · beneficiary: everyone on the call</div>
+    <h2 class="rise">Measure kept promises, not extracted ones.</h2>
+    <div class="imp">
+      <div class="col rise" style="display:flex;flex-direction:column;gap:1.2cqw">
+        <div class="metric panel">
+          <div class="n">kept-promise rate</div>
+          <div class="d">The metric fake PTPs can't inflate — <b>baseline measured in a
+            pilot</b>, A/B against human queues on matched delinquency buckets.</div>
+        </div>
+        <div class="metric panel">
+          <div class="n">0 disclosures <span class="mono" style="color:var(--steel);font-size:1.1cqw">/ 1,000 calls</span></div>
+          <div class="d">The compliance number a collections head can hand to RBI —
+            enforced by architecture, not training.</div>
+        </div>
+      </div>
+      <div class="road panel rise">
+        <h3>Where this goes</h3>
+        <div class="li now">Today: the safe call, live — gate · guard · ledger · runner</div>
+        <div class="li">Structured cross-call memory — retrieval only after fresh verification</div>
+        <div class="li">Results-only admin console — admins see outcomes, never conversations</div>
+        <div class="li">Truth-priced negotiation — negotiate down to keepable amounts</div>
+        <div class="li">Prosody research — hesitation-aware commitments, with borrower override</div>
+      </div>
+    </div>
+    <div class="closer rise">Vachan — वचन. <em>The safe call is the only call the system
+      can make.</em></div>
+    <div class="foot"><span>08 · close</span><span>sarvam.pathshala.dev · dhanyavaad</span></div>
+  </section>
+</div>
+
+<div class="hint">← → navigate · F fullscreen</div>
+<div class="counter" id="counter">1 / 8</div>
+
+<script>
+(function(){
+  const slides=[...document.querySelectorAll('.slide')];
+  const counter=document.getElementById('counter');
+  let i=Math.min(Math.max((parseInt(location.hash.slice(1),10)||1)-1,0),slides.length-1);
+  function show(n){
+    i=(n+slides.length)%slides.length;
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    counter.textContent=(i+1)+' / '+slides.length;
+    history.replaceState(null,'','#'+(i+1));
+  }
+  addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown') show(i+1);
+    else if(e.key==='ArrowLeft'||e.key==='PageUp') show(i-1);
+    else if(e.key==='Home') show(0);
+    else if(e.key==='End') show(slides.length-1);
+    else if(e.key.toLowerCase()==='f'){
+      document.fullscreenElement?document.exitFullscreen():
+        document.documentElement.requestFullscreen();
+    }
+  });
+  addEventListener('click',e=>{
+    if(e.clientX>innerWidth/2) show(i+1); else show(i-1);
+  });
+  addEventListener('hashchange',()=>{
+    const n=(parseInt(location.hash.slice(1),10)||1)-1;
+    if(n!==i) show(n);
+  });
+  show(i);
+})();
+</script>
+</body>
+</html>

@@ -88,6 +88,10 @@ class ControllerClosedError(RuntimeError):
     """A turn arrived after the call acquired a terminal disposition."""
 
 
+class ControllerToolEffectError(RuntimeError):
+    """A tool executor returned without applying its promised domain effect."""
+
+
 class InvalidModelEnvelope(ValueError):
     """The model response did not contain one typed JSON action."""
 
@@ -176,6 +180,7 @@ class DialogueController:
             demo_time_anchor=clock(),
             clock=clock,
             record_event=self._record_promise_event,
+            atomic_event_applier=self._apply_promise_event,
         )
 
     @property
@@ -254,6 +259,25 @@ class DialogueController:
             redacted_reason=event.redacted_reason,
         )
 
+    def _apply_promise_event(
+        self,
+        event: PromiseEvent,
+        mutation: Callable[[], Any],
+    ) -> Any:
+        """Persist one authorized promise effect and its evidence without yielding."""
+
+        snapshot = self.snapshot
+        result, _seq = self.ledger.mutate_with_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type=event.event_type,
+            state_before=replace(snapshot, promise=event.state_before),
+            state_after=replace(snapshot, promise=event.state_after),
+            redacted_reason=event.redacted_reason,
+            mutation=mutation,
+        )
+        return result
+
     async def _record_guard_block(self, event: OutputBlockedEvent) -> None:
         snapshot = self.snapshot
         await self.ledger.append_event(
@@ -297,6 +321,14 @@ class DialogueController:
         reason_code: str,
         evidence_reason: str | None = None,
     ) -> tuple[int, datetime]:
+        """Finalize through the call-scoped atomic boundary, not the tool gate.
+
+        Ending first requires awaited state-machine transitions, so it cannot
+        be a synchronous ``GatedToolExecutor`` effect. The disposition lock and
+        ``mutate_with_event`` instead form the narrower authoritative boundary:
+        exactly one terminal call mutation and its evidence row commit together.
+        """
+
         async with self._disposition_lock:
             persisted = self.ledger.connection.execute(
                 "SELECT ended, disposition FROM calls WHERE id = ?",
@@ -543,19 +575,22 @@ class DialogueController:
             date_phrase,
             demo_time_anchor=self.clock(),
         )
-        await self._tools.execute(
+        mutation = self._promise.plan_candidate(
+            caller_phrase=transcript,
+            amount=amount_minor // 100,
+            date_phrase=normalized_date.isoformat(),
+        )
+        event = await self._tools.execute(
             ToolName.CREATE_PROMISE_CANDIDATE,
             facts=ToolFacts(
                 amount_minor=amount_minor,
                 date_is_allowed=True,
             ),
-            operation=lambda: True,
+            operation=lambda: self._promise.apply_candidate(mutation),
         )
-        await self._promise.create_candidate(
-            caller_phrase=transcript,
-            amount=amount_minor // 100,
-            date_phrase=normalized_date.isoformat(),
-        )
+        if not isinstance(event, PromiseEvent) or self._promise.state is not PromiseState.CANDIDATE:
+            raise ControllerToolEffectError("create promise effect was not applied")
+        await self._promise.record_applied_event(event)
         await self._coordinator.transition(
             PromiseState.CANDIDATE,
             reason_code="promise_candidate_created",
@@ -573,16 +608,19 @@ class DialogueController:
         amount_minor: int | None,
         date_phrase: str | None,
     ) -> str:
-        await self._tools.execute(
-            ToolName.CORRECT_PROMISE_CANDIDATE,
-            facts=ToolFacts(candidate_exists=True),
-            operation=lambda: True,
-        )
-        await self._promise.correct_candidate(
+        mutation = self._promise.plan_correction(
             caller_phrase=transcript,
             amount=None if amount_minor is None else amount_minor // 100,
             date_phrase=date_phrase,
         )
+        event = await self._tools.execute(
+            ToolName.CORRECT_PROMISE_CANDIDATE,
+            facts=ToolFacts(candidate_exists=True),
+            operation=lambda: self._promise.apply_candidate(mutation),
+        )
+        if not isinstance(event, PromiseEvent) or self._promise.state is not PromiseState.CORRECTED:
+            raise ControllerToolEffectError("correct promise effect was not applied")
+        await self._promise.record_applied_event(event)
         await self._coordinator.transition(
             PromiseState.CORRECTED,
             reason_code="promise_candidate_corrected",
@@ -595,20 +633,30 @@ class DialogueController:
         return read_back
 
     async def _confirm_promise(self) -> tuple[str, Disposition]:
-        await self._tools.execute(
+        await self._promise.record_explicit_affirmative()
+        await self._coordinator.transition(
+            PromiseState.CONFIRMED,
+            reason_code="promise_explicitly_confirmed",
+        )
+        mutation = self._promise.plan_commit()
+        result = await self._tools.execute(
             ToolName.COMMIT_PROMISE,
             facts=ToolFacts(
                 candidate_exists=True,
                 candidate_read_back=True,
                 explicit_affirmative=True,
             ),
-            operation=lambda: True,
+            operation=lambda: self._promise.apply_commit(mutation),
         )
-        await self._promise.respond_to_read_back(explicit_affirmative=True)
-        await self._coordinator.transition(
-            PromiseState.CONFIRMED,
-            reason_code="promise_explicitly_confirmed",
-        )
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 2
+            or not isinstance(result[1], PromiseEvent)
+            or self._promise.state is not PromiseState.COMMITTED
+        ):
+            raise ControllerToolEffectError("commit promise effect was not applied")
+        _outcome, event = result
+        await self._promise.record_applied_event(event)
         await self._coordinator.transition(
             PromiseState.COMMITTED,
             reason_code="promise_committed",

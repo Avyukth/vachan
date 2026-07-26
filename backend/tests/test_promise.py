@@ -64,8 +64,14 @@ def test_ambiguous_or_unsupported_amounts_fail_closed(phrase: str) -> None:
     ("phrase", "expected"),
     [
         ("Friday", date(2026, 7, 31)),
+        ("on Friday", date(2026, 7, 31)),
+        ("this Friday", date(2026, 7, 31)),
+        ("Friday ko", date(2026, 7, 31)),
+        ("Friday को", date(2026, 7, 31)),
         ("shukravaar", date(2026, 7, 31)),
+        ("shukravaar ko", date(2026, 7, 31)),
         ("शुक्रवार", date(2026, 7, 31)),
+        ("शुक्रवार को", date(2026, 7, 31)),
         ("kal", date(2026, 7, 27)),
         ("31 July", date(2026, 7, 31)),
         ("31/07/2026", date(2026, 7, 31)),
@@ -84,7 +90,17 @@ def test_ambiguous_date_is_never_guessed() -> None:
         normalize_promise_date("agle hafte", demo_time_anchor=DEMO_TIME_ANCHOR)
 
 
-@pytest.mark.parametrize("phrase", ["30 February", "1 July", "not-a-date"])
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "30 February",
+        "1 July",
+        "not-a-date",
+        "next Friday",
+        "Friday after lunch",
+        "this Friday ko",
+    ],
+)
 def test_impossible_past_or_unknown_dates_are_rejected(phrase: str) -> None:
     with pytest.raises(InvalidPromiseDateError):
         normalize_promise_date(phrase, demo_time_anchor=DEMO_TIME_ANCHOR)

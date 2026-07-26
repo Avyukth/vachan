@@ -391,7 +391,14 @@ def normalize_promise_date(phrase: str, *, demo_time_anchor: datetime) -> date:
     if words in {"tomorrow", "kal", "कल"}:
         return anchor_date + timedelta(days=1)
 
-    weekday = _WEEKDAYS.get(words)
+    weekday_words = words
+    tokens = words.split()
+    if len(tokens) == 2 and tokens[0] in {"on", "this"}:
+        weekday_words = tokens[1]
+    elif len(tokens) == 2 and tokens[1] in {"ko", "को"}:
+        weekday_words = tokens[0]
+
+    weekday = _WEEKDAYS.get(weekday_words)
     if weekday is not None:
         days_ahead = (weekday - anchor_date.weekday()) % 7 or 7
         return anchor_date + timedelta(days=days_ahead)

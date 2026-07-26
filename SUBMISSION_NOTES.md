@@ -116,7 +116,7 @@ real, consented pilot and are not inferred from test calls.
 ## Submission links
 
 - Public demo: `https://sarvam.pathshala.dev`
-- Automated browser-user-agent check: HTTP 200 at `2026-07-26T14:13:30+05:30`. This does not
+- Automated browser-user-agent check: HTTP 200 at `2026-07-26T14:52:24+05:30`. This does not
   replace the required phone/venue check in `sarvam-r9i`.
 - Stage demo: `http://localhost:3000`
 - Architecture diagrams: `vachan_product.drawio`

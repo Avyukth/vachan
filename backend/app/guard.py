@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum, StrEnum
 
@@ -23,6 +23,11 @@ from app.contracts import LedgerEventType
 from app.seeds import MockCaseSeed
 from app.states import IdentityState, PromiseState
 from app.templates import TemplateId, render_template
+from app.verification import (
+    ExpectedVerification,
+    normalize_birth_day_month,
+    normalize_reference_last4,
+)
 
 SAFE_OUTPUT_LINE = render_template(TemplateId.OUTPUT_GUARD_FALLBACK)
 
@@ -31,13 +36,14 @@ class GuardCategory(StrEnum):
     """Stable, redacted reasons for suppressing a response."""
 
     FABRICATED_CREDENTIAL = "fabricated_credential"
+    SEEDED_VERIFICATION_VALUE = "seeded_verification_value"
     SEEDED_ACCOUNT_VALUE = "seeded_account_value"
     AMOUNT_DISCLOSURE = "amount_disclosure"
     DEBT_DISCLOSURE = "debt_disclosure"
     PROMISE_DATE_DISCLOSURE = "promise_date_disclosure"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class OutputGuardContext:
     """Authorization state and backend-only values used by the guard."""
 
@@ -45,6 +51,7 @@ class OutputGuardContext:
     promise_state: PromiseState | str
     protected_account_terms: tuple[str, ...] = ()
     normalized_promise_dates: tuple[date | str, ...] = ()
+    expected_verification: ExpectedVerification | None = field(default=None, repr=False)
 
     @classmethod
     def from_case(
@@ -80,6 +87,7 @@ class OutputGuardContext:
             promise_state=promise_state,
             protected_account_terms=tuple(protected_terms),
             normalized_promise_dates=tuple(normalized_promise_dates),
+            expected_verification=ExpectedVerification.from_case(case),
         )
 
 
@@ -232,6 +240,15 @@ def classify_block(
     # Fabricated authority is unsafe even after the borrower is confirmed.
     if _FABRICATED_CREDENTIAL_PATTERN.search(normalized):
         return GuardCategory.FABRICATED_CREDENTIAL
+
+    expected = context.expected_verification
+    if expected is not None:
+        normalized_birth = normalize_birth_day_month(draft)
+        normalized_reference = normalize_reference_last4(draft)
+        if normalized_birth == (expected.birth_day, expected.birth_month) or (
+            normalized_reference == expected.reference_last4
+        ):
+            return GuardCategory.SEEDED_VERIFICATION_VALUE
 
     if _state_value(context.identity_state) == IdentityState.CONFIRMED.value:
         return None

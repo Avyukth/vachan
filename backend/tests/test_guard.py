@@ -83,6 +83,34 @@ def test_seeded_account_amount_is_loaded_without_hardcoding() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "identity_state",
+    tuple(IdentityState),
+)
+@pytest.mark.parametrize(
+    "draft",
+    (
+        f"reference {RAKESH_CASE.verification.reference_last4}",
+        "reference four seven two nine",
+        "reference चार सात दो नौ",
+        (f"{RAKESH_CASE.verification.birth_day}/{RAKESH_CASE.verification.birth_month:02d}"),
+        "दिन चौदह, महीना सितम्बर",
+    ),
+)
+def test_seeded_verification_values_are_blocked_in_every_identity_state(
+    draft: str,
+    identity_state: IdentityState,
+) -> None:
+    assert classify_block(draft, context(identity_state)) is GuardCategory.SEEDED_VERIFICATION_VALUE
+
+
+def test_guard_context_representation_never_exposes_expected_verification_values() -> None:
+    rendered = repr(context(IdentityState.CONFIRMED))
+
+    assert "expected_verification" not in rendered
+    assert RAKESH_CASE.verification.reference_last4 not in rendered
+
+
 def test_normalized_promise_date_is_blocked_only_with_collection_language() -> None:
     promise_date = date(2026, 7, 31)
     unverified = context(IdentityState.UNVERIFIED, promise_dates=(promise_date,))

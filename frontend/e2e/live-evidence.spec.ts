@@ -1,7 +1,5 @@
 import { expect, test } from '@playwright/test';
 
-const CALL_ID = 'call-browser-e2e';
-
 // Bare `bun test` recursively discovers `*.spec.ts`; only register these
 // cases when the file is loaded by Playwright's Node-based runner.
 if (!('Bun' in globalThis)) {
@@ -56,7 +54,7 @@ if (!('Bun' in globalThis)) {
 		).toBe(true);
 	});
 
-	test('real operator controls render persisted live evidence and reconnect without duplicates', async ({
+	test('production operator flow persists evidence through takeover, ending, and reset', async ({
 		page
 	}) => {
 	const consoleErrors: string[] = [];
@@ -65,10 +63,11 @@ if (!('Bun' in globalThis)) {
 		if (message.type() === 'error') consoleErrors.push(message.text());
 	});
 	page.on('request', (request) => {
-		if (request.url().includes('/api/evidence') || request.url().includes('/ws/evidence')) {
+		if (request.url().includes('/api/')) {
 			networkLog.push(`${request.method()} ${request.url()}`);
 		}
 	});
+	page.on('websocket', (socket) => networkLog.push(`WS ${socket.url()}`));
 	await page.goto('/', { waitUntil: 'networkidle' });
 	await expect(page.getByRole('combobox', { name: 'Mock case' })).toHaveValue('case-rakesh-001');
 
@@ -86,9 +85,14 @@ if (!('Bun' in globalThis)) {
 	await expect(identityRibbon.getByText('UNVERIFIED', { exact: true })).toBeVisible();
 	await expect(identityRibbon.getByText('VERIFYING', { exact: true })).toBeVisible();
 	await expect(identityRibbon.getByText('CONFIRMED', { exact: true })).toBeVisible();
-	await expect(liveConsole.getByText('read_mock_account · DENIED', { exact: true })).toBeVisible();
+	await expect(
+		liveConsole.getByText(/create_promise_candidate · DENIED · invalid_action_facts=ambiguous_date/)
+	).toBeVisible();
 	expect(Date.now() - startedAt).toBeLessThan(1_000);
-	await expect(liveConsole.locator('.evidence-card li')).toHaveCount(4);
+	const callId = await page.evaluate(() => sessionStorage.getItem('vachan.activeCallId'));
+	expect(callId).toMatch(/^call-/);
+	const evidenceCount = await liveConsole.locator('.evidence-card li').count();
+	expect(evidenceCount).toBeGreaterThanOrEqual(7);
 
 	await page.reload();
 	const restoredConsole = page.locator('.operator-console').filter({
@@ -97,21 +101,84 @@ if (!('Bun' in globalThis)) {
 	await expect(
 		restoredConsole.locator('.identity-ribbon').getByText('CONFIRMED', { exact: true })
 	).toBeVisible();
-	await expect(restoredConsole.locator('.evidence-card li')).toHaveCount(4);
+	await expect(restoredConsole.locator('.evidence-card li')).toHaveCount(evidenceCount);
 	expect(consoleErrors).toEqual([]);
-	expect(networkLog.some((line) => line.includes(`/api/evidence/${CALL_ID}`))).toBe(true);
+
+	const evidenceRecovery = `**/api/evidence/${callId}`;
+	await page.route(evidenceRecovery, (route) =>
+		route.fulfill({
+			status: 503,
+			contentType: 'application/json',
+			body: '{"detail":"injected active-call evidence outage"}'
+		})
+	);
+	await page.reload();
+	const degradedConsole = page.locator('.operator-console').filter({
+		hasText: 'LIVE · PERSISTED LEDGER'
+	});
+	await expect(degradedConsole.getByRole('alert')).toContainText('EVENT STREAM DEGRADED');
+	await expect(degradedConsole.getByRole('button', { name: 'End call' })).toBeEnabled();
+	await expect(degradedConsole.getByRole('button', { name: 'Break-glass takeover' })).toBeEnabled();
+
+	await degradedConsole.getByRole('button', { name: 'Break-glass takeover' }).click();
+	await expect(degradedConsole.locator('.takeover-banner')).toContainText(
+		'OPERATOR TAKEOVER — AGENT SILENCED'
+	);
+	await degradedConsole.getByRole('textbox', { name: 'REQUIRED END REASON' }).fill(
+		'Browser E2E operator completed the conversation'
+	);
+	await degradedConsole.getByRole('button', { name: 'End call' }).click();
+	await page.unroute(evidenceRecovery);
+	await expect(degradedConsole.locator('.outcome-panel')).toContainText('ENDED_OPERATOR');
+
+	const completedEvidence = await page.request.get(`/api/evidence/${callId}`);
+	expect(completedEvidence.ok()).toBe(true);
+	const completedBody = (await completedEvidence.json()) as {
+		events: Array<{ type: string; payload: Record<string, unknown> }>;
+	};
+	const dispositions = completedBody.events.filter((event) => event.type === 'disposition');
+	expect(dispositions).toHaveLength(1);
+	expect(dispositions[0]?.payload.disposition).toBe('ENDED_OPERATOR');
+	expect(completedBody.events.at(-1)?.type).toBe('disposition');
+
+	await page.getByRole('button', { name: 'Reset demo data' }).click();
+	await page.getByRole('button', { name: 'Confirm demo reset' }).click();
+	await expect(page.getByText(/Reset complete\. 3 governed mock cases/)).toBeVisible();
+	await expect(page.getByRole('combobox', { name: 'Mock case' })).toHaveValue(
+		'case-rakesh-001'
+	);
+
+	expect(consoleErrors.length).toBeGreaterThan(0);
+	expect(
+		consoleErrors.every((message) =>
+			message.includes('the server responded with a status of 503')
+		)
+	).toBe(true);
+	for (const boundary of [
+		'/api/preflight',
+		'/api/call/start',
+		'/ws/call/',
+		'/api/evidence/',
+		'/ws/evidence/',
+		'/api/takeover',
+		'/api/call/end',
+		'/api/reset'
+	]) {
+		expect(networkLog.some((line) => line.includes(boundary)), networkLog.join('\n')).toBe(true);
+	}
 	await page.screenshot({ path: '/tmp/vachan-jg9-live-ledger.png', fullPage: true });
 	});
 
 	test('evidence recovery failure is visible and never relabeled as live state', async ({ page }) => {
+		const missingCallId = 'call-injected-evidence-outage';
 		await page.addInitScript(
 			({ key, callId }) => sessionStorage.setItem(key, callId),
-			{ key: 'vachan.activeCallId', callId: CALL_ID }
+			{ key: 'vachan.activeCallId', callId: missingCallId }
 		);
 		await page.route('**/api/cases', (route) =>
 			route.fulfill({ contentType: 'application/json', body: '{"api_version":"v0","cases":[]}' })
 		);
-		await page.route(`**/api/evidence/${CALL_ID}`, (route) =>
+		await page.route(`**/api/evidence/${missingCallId}`, (route) =>
 			route.fulfill({
 				status: 503,
 				contentType: 'application/json',

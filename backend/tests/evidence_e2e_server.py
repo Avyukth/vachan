@@ -1,170 +1,217 @@
-"""Local deterministic backend used only by the browser evidence E2E suite."""
+"""Production FastAPI application with deterministic external boundaries for browser E2E."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import sqlite3
 import struct
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
-
-from app.contracts import LedgerEventType, StateSnapshot
+import app.voice as voice_module
+from app.audio_spike import SAMPLE_RATE
 from app.db import EvidenceLedger, migrate_schema
-from app.evidence import router as evidence_router
-from app.protocol import (
-    CasesResponse,
-    CaseSummary,
-    PreflightCheck,
-    PreflightResponse,
-    PreflightResult,
-    StartCallRequest,
-    StartCallResponse,
+from app.main import (
+    _discard_call_session,
+    _end_normal_call,
+    _production_voice_binding,
+    _reconcile_registry_orphans,
+    app,
 )
-from app.seeds import RAKESH_CASE, reset_and_reseed_demo_cases
-from app.states import CallState, IdentityState, PromiseState
-from app.tools import ToolDecision, ToolName
+from app.sarvam_client import SynthesizedSpeech
+from app.seeds import reset_and_reseed_demo_cases
+from app.stt import SttSessionRegistry
+from app.takeover import TakeoverRegistry
 
-CALL_ID = "call-browser-e2e"
+JsonObject = dict[str, Any]
+BROWSER_E2E_PCM = bytes(1_600 * 2)
+BROWSER_E2E_WAV = (
+    b"RIFF"
+    + struct.pack("<I", 36 + len(BROWSER_E2E_PCM))
+    + b"WAVEfmt "
+    + struct.pack("<IHHIIHH", 16, 1, 1, 16_000, 32_000, 2, 16)
+    + b"data"
+    + struct.pack("<I", len(BROWSER_E2E_PCM))
+    + BROWSER_E2E_PCM
+)
+SCRIPTED_TRANSCRIPTS = (
+    "Rakesh bol raha hoon",
+    "चौदह सितंबर, reference 4729",
+    "pandrah sau next week",
+)
+SCRIPTED_ACTIONS = (
+    {"intent": "borrower_present"},
+    {"intent": "verification_response"},
+    {
+        "intent": "offer_promise",
+        "amount_minor": 150_000,
+        "date_phrase": "next week",
+    },
+)
 
 
-def _ledger() -> EvidenceLedger:
-    connection = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
+class ScriptedDialogueClient:
+    """Replace only the remote chat/TTS boundary while retaining the production controller."""
+
+    def __init__(self, _api_key: str) -> None:
+        self.last_llm_ms = 0.0
+        self.last_tts_ms = 0.0
+        self._action_index = 0
+
+    async def transcribe(self, audio: bytes, **kwargs: object) -> JsonObject:
+        raise AssertionError("production voice calls must use streaming STT")
+
+    async def chat_completion(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        **kwargs: object,
+    ) -> JsonObject:
+        assert messages
+        try:
+            action = SCRIPTED_ACTIONS[self._action_index]
+        except IndexError as error:
+            raise AssertionError("browser E2E exhausted its dialogue script") from error
+        self._action_index += 1
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(action, ensure_ascii=False),
+                    }
+                }
+            ]
+        }
+
+    async def synthesize(self, text: str, **kwargs: object) -> JsonObject:
+        assert text.strip()
+        return {
+            "audio_base64": base64.b64encode(BROWSER_E2E_WAV).decode("ascii"),
+            "content_type": "audio/wav",
+            "request_id": "browser-e2e-tts",
+        }
+
+
+class ScriptedStreamingSocket:
+    """Emit finalized transcripts through the real streaming-STT adapter."""
+
+    def __init__(self) -> None:
+        self._index = 0
+
+    async def transcribe(
+        self,
+        audio: str,
+        encoding: str = "audio/wav",
+        sample_rate: int = SAMPLE_RATE,
+    ) -> None:
+        assert audio
+        assert encoding == "audio/wav"
+        assert sample_rate == SAMPLE_RATE
+
+    async def flush(self) -> None:
+        return None
+
+    def __aiter__(self) -> AsyncIterator[dict[str, object]]:
+        return self
+
+    async def __anext__(self) -> dict[str, object]:
+        if self._index >= len(SCRIPTED_TRANSCRIPTS):
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+        await asyncio.sleep(0.05)
+        transcript = SCRIPTED_TRANSCRIPTS[self._index]
+        self._index += 1
+        return {
+            "type": "data",
+            "data": {
+                "transcript": transcript,
+            },
+        }
+
+
+class FixedAudioCheck:
+    """Return deterministic WAV bytes for the reviewed headphone-check route."""
+
+    async def synthesize(self, approved_text: str) -> SynthesizedSpeech:
+        assert approved_text.strip()
+        return SynthesizedSpeech(
+            audio=BROWSER_E2E_WAV,
+            request_id="browser-e2e-audio-check",
+        )
+
+
+@asynccontextmanager
+async def scripted_stream(_api_key: str) -> AsyncIterator[ScriptedStreamingSocket]:
+    yield ScriptedStreamingSocket()
+
+
+def _isolated_ledger() -> EvidenceLedger:
+    connection = sqlite3.connect(
+        ":memory:",
+        check_same_thread=False,
+        isolation_level=None,
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     migrate_schema(connection)
-    ledger = EvidenceLedger(connection)
+    return EvidenceLedger(connection)
+
+
+@asynccontextmanager
+async def production_e2e_lifespan(application: Any) -> AsyncIterator[None]:
+    """Initialize the production application with isolated, deterministic dependencies."""
+
+    ledger = _isolated_ledger()
     reset_and_reseed_demo_cases(ledger)
-    return ledger
-
-
-def _snapshot(identity: IdentityState) -> StateSnapshot:
-    return StateSnapshot(
-        call=CallState.ACTIVE,
-        identity=identity,
-        promise=PromiseState.NONE,
+    application.state.sarvam_api_key = "browser-e2e-backend-only-key"
+    application.state.evidence_ledger = ledger
+    application.state.stt_sessions = SttSessionRegistry()
+    application.state.takeover_sessions = TakeoverRegistry()
+    application.state.voice_calls = None
+    application.state.tts_synthesizer = FixedAudioCheck()
+    application.state.sarvam_stream_factory = scripted_stream
+    application.state.orphan_call_reconciler = lambda call_id=None: _reconcile_registry_orphans(
+        application,
+        call_id,
     )
-
-
-def _silent_wav() -> bytes:
-    samples = 1_600
-    pcm = bytes(samples * 2)
-    return (
-        b"RIFF"
-        + struct.pack("<I", 36 + len(pcm))
-        + b"WAVEfmt "
-        + struct.pack("<IHHIIHH", 16, 1, 1, 16_000, 32_000, 2, 16)
-        + b"data"
-        + struct.pack("<I", len(pcm))
-        + pcm
+    application.state.stt_call_binding_factory = lambda call_id: _production_voice_binding(
+        application,
+        call_id,
     )
-
-
-ledger = _ledger()
-app = FastAPI(title="Vachan evidence browser E2E")
-app.state.evidence_ledger = ledger
-app.include_router(evidence_router)
-
-
-@app.get("/api/cases", response_model=CasesResponse)
-async def cases() -> CasesResponse:
-    return CasesResponse(
-        cases=(
-            CaseSummary(
-                case_id=RAKESH_CASE.case_id,
-                borrower_display_name=RAKESH_CASE.borrower_display_name,
-                eligible=True,
-                contact_cap_remaining=1,
-            ),
-        )
+    application.state.call_session_registrar = lambda call_id: _production_voice_binding(
+        application,
+        call_id,
     )
-
-
-@app.post("/api/audio/check")
-async def audio_check() -> Response:
-    return Response(content=_silent_wav(), media_type="audio/wav")
-
-
-@app.post("/api/preflight", response_model=PreflightResponse)
-async def preflight() -> PreflightResponse:
-    return PreflightResponse(
-        result=PreflightResult.READY,
-        checks=(PreflightCheck(name="backend", **{"pass": True}, detail="Backend is reachable."),),
+    application.state.call_session_discard = lambda call_id: _discard_call_session(
+        application,
+        call_id,
     )
-
-
-@app.post("/api/call/start", response_model=StartCallResponse)
-async def start_call(payload: StartCallRequest) -> StartCallResponse:
-    assert payload.case_id == RAKESH_CASE.case_id
-    existing = ledger.connection.execute(
-        "SELECT 1 FROM calls WHERE id = ?",
-        (CALL_ID,),
-    ).fetchone()
-    if existing is None:
-        ledger.connection.execute(
-            """
-            INSERT INTO calls (id, case_id, started, transport)
-            VALUES (?, ?, ?, ?)
-            """,
-            (CALL_ID, RAKESH_CASE.case_id, datetime.now(UTC).isoformat(), "streaming_pcm16_ws"),
-        )
-        unverified = _snapshot(IdentityState.UNVERIFIED)
-        verifying = _snapshot(IdentityState.VERIFYING)
-        confirmed = _snapshot(IdentityState.CONFIRMED)
-        await ledger.append_event(
-            call_id=CALL_ID,
-            ts=datetime.now(UTC),
-            event_type=LedgerEventType.STATE_TRANSITION,
-            state_before=unverified,
-            state_after=verifying,
-            redacted_reason="verification_started",
-        )
-        await ledger.append_tool_decision(
-            call_id=CALL_ID,
-            ts=datetime.now(UTC),
-            decision=ToolDecision(
-                tool=ToolName.READ_MOCK_ACCOUNT,
-                allowed=False,
-                call_state=CallState.ACTIVE.value,
-                identity_state=IdentityState.VERIFYING.value,
-                promise_state=PromiseState.NONE.value,
-                reason="identity_state=VERIFYING",
-            ),
-            state=verifying,
-        )
-        await ledger.append_event(
-            call_id=CALL_ID,
-            ts=datetime.now(UTC),
-            event_type="VERIFICATION_ATTEMPT",
-            state_before=verifying,
-            state_after=verifying,
-            redacted_reason=(
-                "verification_attempt:"
-                '{"attempt_number":1,"fields":[{"field_name":"birth_day","passed":true},'
-                '{"field_name":"reference_last4","passed":true}],"passed":true}'
-            ),
-        )
-        await ledger.append_event(
-            call_id=CALL_ID,
-            ts=datetime.now(UTC),
-            event_type=LedgerEventType.STATE_TRANSITION,
-            state_before=verifying,
-            state_after=confirmed,
-            redacted_reason="verification_confirmed",
-        )
-    return StartCallResponse(call_id=CALL_ID)
-
-
-@app.websocket("/ws/call/{call_id}")
-async def voice_socket(websocket: WebSocket, call_id: str) -> None:
-    if call_id != CALL_ID:
-        await websocket.close(code=1008)
-        return
-    await websocket.accept()
-    await websocket.send_json({"type": "ready", "sample_rate": 16_000, "encoding": "pcm_s16le"})
+    application.state.normal_call_ender = lambda call_id, reason: _end_normal_call(
+        application,
+        call_id,
+        reason,
+    )
     try:
-        while True:
-            await websocket.receive_bytes()
-            await asyncio.sleep(0)
-    except WebSocketDisconnect:
-        return
+        yield
+    finally:
+        application.state.stt_sessions.cancel_all()
+        application.state.voice_calls = None
+        application.state.takeover_sessions = None
+        application.state.stt_sessions = None
+        application.state.tts_synthesizer = None
+        application.state.sarvam_stream_factory = None
+        application.state.orphan_call_reconciler = None
+        application.state.stt_call_binding_factory = None
+        application.state.call_session_registrar = None
+        application.state.call_session_discard = None
+        application.state.normal_call_ender = None
+        ledger.close()
+        application.state.evidence_ledger = None
+        application.state.sarvam_api_key = None
+
+
+voice_module.ProductionDialogueClient = ScriptedDialogueClient  # type: ignore[misc]
+app.router.lifespan_context = production_e2e_lifespan

@@ -53,7 +53,12 @@ TEMPLATE_BANK = MappingProxyType(
         TemplateId.OUTPUT_GUARD_FALLBACK: (
             "माफ़ कीजिए, मैं वह बात सुरक्षित रूप से नहीं कह सकती। कृपया एक क्षण रुकिए।",
         ),
-        TemplateId.STT_RECOVERY: ("line kharab hai, dobara boliye",),
+        # Was "line kharab hai, dobara boliye" - the only romanized line in the whole bank.
+        # Two problems: Bulbul pronounces romanized Hindi as if it were English, and it
+        # renders in a Latin face beside Devanagari everywhere else, so it reads as a bug on
+        # screen. It is also the line a caller hears most when speech recognition struggles,
+        # which made it the most visible text in the product.
+        TemplateId.STT_RECOVERY: ("आवाज़ साफ़ नहीं आ रही। कृपया दोबारा कहिए।",),
         TemplateId.PROMISE_AMOUNT_REQUIRED: ("कृपया पूरी रकम फिर बताइए।",),
         TemplateId.PROMISE_DATE_REQUIRED: ("कृपया तारीख या दिन फिर बताइए।",),
     }

@@ -535,7 +535,14 @@
 	.evidence-card small {
 		overflow-wrap: anywhere;
 		color: var(--color-muted);
-		line-height: 1.4;
+		/* These rows carry the agent's spoken Hindi. 0.68rem (10.88px) with line-height 1.4
+		   left no vertical room for stacked matras, so they overlapped the line above and
+		   read as mangled even once the font stack was correct. Devanagari wants a larger
+		   size and looser leading than the equivalent Latin. Tracking is reset because
+		   Devanagari is shaped - letter-spacing separates a matra from its base glyph. */
+		font-size: 0.8rem;
+		line-height: 1.85;
+		letter-spacing: normal;
 	}
 
 	@media (max-width: 62rem) {

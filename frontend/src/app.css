@@ -7,8 +7,23 @@
 	--color-accent: #d97b29;
 	--color-held: #4c9a6a;
 	--color-demoted: #b4553f;
-	--font-body: 'Geist', 'Noto Sans Devanagari', system-ui, sans-serif;
-	--font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+	/* Devanagari needs its own declared stack, not a hopeful single name. No @font-face and
+	   no bundled font files exist, so every family here resolves only if the viewer has it:
+	   Noto Sans Devanagari where installed, Kohinoor Devanagari on macOS (verified present at
+	   /System/Library/Fonts/Kohinoor.ttc on the demo machine), Devanagari Sangam MN as the
+	   older macOS fallback, Nirmala UI on Windows, ITF Devanagari last. Ending in sans-serif
+	   means the browser still picks a shaping-capable face rather than a Latin-only one. */
+	--font-deva: 'Noto Sans Devanagari', 'Kohinoor Devanagari', 'Devanagari Sangam MN',
+		'Nirmala UI', 'ITF Devanagari', sans-serif;
+	--font-body: 'Geist', var(--font-deva);
+	/* The Latin mono faces stay FIRST so digits, states and IDs keep their monospace grid -
+	   that is a design requirement. Devanagari then falls through per glyph to a real
+	   Devanagari face. Previously this stack ended at `monospace`, which has no Devanagari
+	   coverage, so every Hindi utterance in the evidence ledger was shaped by a Latin-only
+	   font: matras (ि े ै above, ु ृ below) collapsed into the base glyph. That was the
+	   mangling, and it hit the ledger rows the judges read most closely. */
+	--font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Noto Sans Devanagari',
+		'Kohinoor Devanagari', 'Devanagari Sangam MN', monospace;
 	color-scheme: dark;
 	font-family: var(--font-body);
 	font-synthesis: none;
@@ -113,9 +128,14 @@ h2 {
 }
 
 .brand-lockup h1 span {
-	font-family: 'Noto Sans Devanagari', var(--font-body);
+	font-family: var(--font-deva);
 	font-weight: 500;
 	color: var(--color-muted);
+	/* The h1 sets letter-spacing: -0.04em, which at 32px is -1.28px of negative tracking.
+	   On Latin that is tightening; on Devanagari it drags matras and conjuncts into the
+	   neighbouring glyph, so वचन rendered visibly crushed. Devanagari is shaped, not
+	   letter-spaced - always reset tracking to normal on it. */
+	letter-spacing: normal;
 }
 
 .eyebrow,
@@ -265,6 +285,23 @@ footer {
 .hardware-note {
 	border-top: 1px solid var(--color-seam);
 	padding-top: 1rem;
+}
+
+.floor-indicator {
+	margin-top: 0.75rem;
+	border-left: 3px solid var(--color-accent);
+	padding: 0.4rem 0.75rem;
+	background: color-mix(in srgb, var(--color-accent), transparent 90%);
+	color: var(--color-text);
+	font-family: var(--font-mono);
+	font-size: 0.72rem;
+	letter-spacing: 0.06em;
+}
+
+.floor-indicator.listening {
+	border-left-color: var(--color-held);
+	background: color-mix(in srgb, var(--color-held), transparent 92%);
+	color: var(--color-muted);
 }
 
 .preflight-decision {

@@ -161,9 +161,12 @@ def test_stt_recovery_is_reviewed_registry_copy() -> None:
     """The first timeout prompt resolves back to a typed reviewed identifier."""
     response = render_template(TemplateId.STT_RECOVERY)
 
-    assert response == "line kharab hai, dobara boliye"
+    assert response == "आवाज़ साफ़ नहीं आ रही। कृपया दोबारा कहिए।"
     assert template_id_for_reviewed_text(response) is TemplateId.STT_RECOVERY
     assert is_bank_member(response)
+    # The caller hears this line more than any other when recognition struggles, so it must
+    # be Devanagari like the rest of the bank: romanized Hindi is mispronounced by Bulbul.
+    assert not response.isascii()
 
 
 def test_arbitrary_operational_speech_is_rejected() -> None:

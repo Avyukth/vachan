@@ -1,0 +1,17 @@
+HTTP/2 200
+date: Sun, 26 Jul 2026 07:03:20 GMT
+content-type: application/json
+content-length: 181
+server: uvicorn
+x-request-id: 20260726_133e6072-550b-49d5-8077-677f5d95e988
+access-control-allow-origin: *
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=()
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+cache-control: no-store, no-cache, must-revalidate
+pragma: no-cache
+expires: 0
+x-xss-protection: 0

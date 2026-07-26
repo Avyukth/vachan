@@ -61,6 +61,8 @@ def test_every_preconfirmed_state_has_zero_account_or_verification_context(
     assert str(RAKESH_CASE.account.outstanding_minor) not in payload
     assert RAKESH_CASE.verification.reference_last4 not in payload
     assert "14 September" not in payload
+    assert '{"intent":"<enum>"}' in context.messages[0].content
+    assert "borrower_present" in context.messages[1].content
 
 
 def test_spoken_seeded_values_are_removed_before_classifier_prompt() -> None:
@@ -137,6 +139,10 @@ def test_confirmed_context_adds_account_but_never_auth_expected_values() -> None
     assert REDACTION_MARKER in payload
     assert '"birth_day"' not in payload
     assert '"birth_month"' not in payload
+    assert "amount_minor" in context.messages[0].content
+    assert "offer_promise" in context.messages[0].content
+    assert '"amount_minor":150000' in context.messages[0].content
+    assert '"date_phrase":"Friday"' in context.messages[0].content
     assert {tool.value for tool in context.available_tools} == {
         "read_mock_account",
         "create_promise_candidate",

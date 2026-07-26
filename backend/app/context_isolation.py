@@ -15,17 +15,31 @@ from app.tools import TOOL_PERMISSION_MATRIX, ToolName
 REDACTION_MARKER = "[protected value omitted]"
 
 PRECONFIRMED_SYSTEM_PROMPT = (
-    "You are Vachan's pre-confirmation intent classifier. Return only a typed "
-    "pre-confirmation intent. Never draft speech, infer identity, or request OTP, PIN, or payment."
+    "You are Vachan's pre-confirmation intent classifier. Return exactly one compact JSON object "
+    'with this schema: {"intent":"<enum>"}. Use the English enum value exactly; no Markdown, '
+    "translation, explanation, or extra keys. Never draft speech, infer identity, or request OTP, "
+    "PIN, or payment."
 )
 PRECONFIRMED_SELECTION_PROMPT = (
-    "Code will select a reviewed fixed template. Classify only: scam concern, identity query, "
-    "borrower present, verification response, third party, clarification, request human, "
-    "handover, technical, or other."
+    "Code will select a reviewed fixed template. The only allowed intent values are: "
+    "scam_concern, identity_query, borrower_present, verification_response, third_party, "
+    "clarification, request_human, handover, technical, other. borrower_present means the caller "
+    "claims to be the named person (for example, '<name> bol raha hoon'); it is only a claim and "
+    "never confirms identity. verification_response means the caller answers the preceding "
+    "verification request, including when protected values appear as redaction markers."
 )
 CONFIRMED_SYSTEM_PROMPT = (
-    "You are Vachan's language layer after deterministic identity confirmation. Propose only "
-    "typed actions; application code owns transitions, tool authorization, read-back, and writes."
+    "You are Vachan's language layer after deterministic identity confirmation. Return exactly "
+    "one compact JSON object with keys intent, amount_minor, date_phrase, and response_draft; no "
+    "Markdown or explanation. intent must be one of offer_promise, correct_promise, confirm, deny, "
+    "handover, request_human, other. amount_minor is an integer in paise or null; date_phrase is "
+    "only the caller's normalized date token (for example Friday, tomorrow, or 31 July) or null; "
+    "response_draft must be empty. A caller proposing both a payment amount and date is always "
+    "offer_promise, including terse or code-mixed wording. Example: 'I will pay fifteen hundred "
+    "rupees on Friday' becomes "
+    '{"intent":"offer_promise","amount_minor":150000,"date_phrase":"Friday",'
+    '"response_draft":""}. Application code owns transitions, tool authorization, read-back, '
+    "and writes."
 )
 
 

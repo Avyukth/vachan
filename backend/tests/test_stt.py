@@ -65,6 +65,7 @@ class RecordingCallbacks:
     transcripts: list[tuple[str, str]] = field(default_factory=list)
     recovery_prompts: list[tuple[str, str]] = field(default_factory=list)
     degradations: list[tuple[str, str]] = field(default_factory=list)
+    timings: list[tuple[str, float]] = field(default_factory=list)
 
     async def on_final_transcript(self, call_id: str, transcript: str) -> None:
         self.transcripts.append((call_id, transcript))
@@ -74,6 +75,9 @@ class RecordingCallbacks:
 
     async def on_degraded(self, call_id: str, reason_code: str) -> None:
         self.degradations.append((call_id, reason_code))
+
+    async def on_stt_timing(self, call_id: str, elapsed_ms: float) -> None:
+        self.timings.append((call_id, elapsed_ms))
 
 
 @dataclass
@@ -90,6 +94,27 @@ class RecordingBinding(RecordingCallbacks):
 
     def is_call_active(self) -> bool:
         return self.active_call()
+
+
+@dataclass
+class BrowserEventBinding(RecordingBinding):
+    events: asyncio.Queue[dict[str, object]] = field(default_factory=asyncio.Queue)
+
+    async def on_connected(self) -> None:
+        await self.events.put({"type": "agent_turn", "kind": "opening"})
+
+    async def on_final_transcript(self, call_id: str, transcript: str) -> None:
+        await super().on_final_transcript(call_id, transcript)
+        await self.events.put(
+            {
+                "type": "agent_turn",
+                "kind": "turn",
+                "transcript": transcript,
+            }
+        )
+
+    async def next_client_event(self) -> dict[str, object]:
+        return await self.events.get()
 
 
 def final_message(transcript: str) -> dict[str, Any]:
@@ -368,6 +393,42 @@ def test_production_websocket_routes_only_final_text_to_call_binding() -> None:
     assert binding.transcripts == [("call-stt-001", "मेरी आवाज आ रही है")]
     assert binding.degradations == []
     assert not app.state.stt_sessions.cancel_call("call-stt-001")
+
+
+def test_production_websocket_sends_opening_and_controller_turn_to_browser() -> None:
+    stream = FakeStream()
+    binding = BrowserEventBinding()
+    stream.responses.put_nowait({"type": "events", "data": {"signal_type": "START_SPEECH"}})
+    stream.responses.put_nowait({"type": "events", "data": {"signal_type": "END_SPEECH"}})
+    stream.responses.put_nowait(final_message("Rakesh bol raha hoon"))
+
+    @asynccontextmanager
+    async def stream_factory(api_key: str) -> AsyncIterator[FakeStream]:
+        yield stream
+
+    app = FastAPI()
+    app.state.sarvam_api_key = "backend-only-key"
+    app.state.sarvam_stream_factory = stream_factory
+    app.state.stt_call_binding_factory = lambda call_id: binding
+    app.state.stt_sessions = SttSessionRegistry()
+    app.include_router(router)
+
+    path = STT_WEBSOCKET_PATH.format(call_id="call-stt-001")
+    with TestClient(app).websocket_connect(path) as websocket:
+        assert websocket.receive_json()["type"] == "ready"
+        assert websocket.receive_json() == {"type": "agent_turn", "kind": "opening"}
+        websocket.send_bytes(b"\x01\x00")
+        websocket.send_text('{"type":"flush"}')
+        assert websocket.receive_json() == {
+            "type": "agent_turn",
+            "kind": "turn",
+            "transcript": "Rakesh bol raha hoon",
+        }
+
+    assert binding.transcripts == [("call-stt-001", "Rakesh bol raha hoon")]
+    assert binding.timings
+    assert binding.timings[0][0] == "call-stt-001"
+    assert binding.timings[0][1] >= 0
 
 
 def test_production_websocket_rejects_inactive_call_before_opening_stream() -> None:

@@ -28,7 +28,11 @@ SARVAM_CHAT_MODEL = "sarvam-30b"
 SARVAM_CHAT_TEMPERATURE = 0.1
 PRECONFIRMATION_TIMEOUT_SECONDS = 2.0
 POSTCONFIRMATION_TIMEOUT_SECONDS = 4.0
-MAX_RESPONSE_TOKENS = 180
+# Sarvam's reasoning tokens count against this limit even though only ``content``
+# reaches the controller. Live API validation showed limits through 1536 could
+# still truncate before the compact JSON answer for the real isolated prompt.
+# 4096 preserves a hard ceiling while allowing the model to stop naturally.
+MAX_RESPONSE_TOKENS = 4_096
 POSTCONFIRMATION_HOLD_LINE = "एक सेकंड दीजिए।"
 
 
@@ -63,8 +67,8 @@ class CompletionClient(Protocol):
 class CallLLMBudget:
     """A small deterministic request/token allowance owned by one call."""
 
-    request_limit: int = 16
-    token_limit: int = 2_880
+    request_limit: int = 6
+    token_limit: int = 24_576
     requests_used: int = 0
     tokens_reserved: int = 0
 

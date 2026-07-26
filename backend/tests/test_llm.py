@@ -11,10 +11,12 @@ import pytest
 from app.actions import Intent, PreConfirmationIntent, PreConfirmationTemplate
 from app.context_isolation import build_llm_context
 from app.llm import (
+    MAX_RESPONSE_TOKENS,
     POSTCONFIRMATION_HOLD_LINE,
     SARVAM_CHAT_MODEL,
     CallLLMBudget,
     DecisionSource,
+    LLMBudgetExhausted,
     LLMUnavailable,
     VachanLLMSession,
     deterministic_preconfirmation_intent,
@@ -221,6 +223,19 @@ def test_budget_exhaustion_fails_preconfirmation_to_keyword_classifier() -> None
     assert decision.source is DecisionSource.DETERMINISTIC_FALLBACK
     assert decision.validation.template is PreConfirmationTemplate.INTRO_ANTISCAM
     assert SARVAM_CHAT_MODEL == "sarvam-30b"
+
+
+def test_default_budget_bounds_six_live_reasoning_completions() -> None:
+    budget = CallLLMBudget()
+
+    for _ in range(6):
+        budget.reserve(MAX_RESPONSE_TOKENS)
+
+    assert MAX_RESPONSE_TOKENS == 4_096
+    assert budget.requests_used == 6
+    assert budget.tokens_reserved == 24_576
+    with pytest.raises(LLMBudgetExhausted, match="budget is exhausted"):
+        budget.reserve(MAX_RESPONSE_TOKENS)
 
 
 def test_pre_and_post_roles_reject_wrong_context_side() -> None:

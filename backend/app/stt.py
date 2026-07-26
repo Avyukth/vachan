@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -64,6 +65,16 @@ class SttCallBinding(SttCallbacks, Protocol):
 
     def is_call_active(self) -> bool:
         """Return whether STT callbacks may still affect this call."""
+
+
+class SttClientEventSource(Protocol):
+    """Optional binding surface for controller audio/events sent to the browser."""
+
+    async def on_connected(self) -> None:
+        """Activate the call and enqueue its blind greeting."""
+
+    async def next_client_event(self) -> dict[str, object]:
+        """Wait for the next safe controller-owned browser event."""
 
 
 CallIsActive = Callable[[], bool]
@@ -139,6 +150,7 @@ class StreamingSttSession:
         self._utterance_id = 0
         self._waiting_for_final = False
         self._timed_out_utterance: int | None = None
+        self._final_wait_started_at: float | None = None
         self._utterance_lock = asyncio.Lock()
 
     @property
@@ -237,9 +249,19 @@ class StreamingSttSession:
         if self._deadline_task is not None:
             self._deadline_task.cancel()
         utterance_id = self._utterance_id
+        self._final_wait_started_at = time.perf_counter()
         self._deadline_task = asyncio.create_task(
             self._watch_final_deadline(generation, utterance_id)
         )
+
+    async def _record_stt_timing(self) -> None:
+        started_at = self._final_wait_started_at
+        self._final_wait_started_at = None
+        if started_at is None:
+            return
+        callback = getattr(self._callbacks, "on_stt_timing", None)
+        if callback is not None:
+            await callback(self.call_id, (time.perf_counter() - started_at) * 1000)
 
     async def _watch_final_deadline(self, generation: int, utterance_id: int) -> None:
         await asyncio.sleep(self._timeout_seconds)
@@ -311,6 +333,7 @@ class StreamingSttSession:
                 if not self._is_current(generation):
                     return SttResult(SttOutcome.DROPPED, reason="stale_result")
                 self._consecutive_timeouts = 0
+                await self._record_stt_timing()
                 await self._callbacks.on_final_transcript(self.call_id, transcript)
             return SttResult(SttOutcome.DROPPED, reason="call_inactive")
         except StopAsyncIteration:
@@ -333,6 +356,7 @@ class StreamingSttSession:
                 return SttResult(SttOutcome.DROPPED, reason="call_inactive")
 
             try:
+                started_at = time.perf_counter()
                 async with asyncio.timeout(self._timeout_seconds):
                     await self._stream.flush()
                     task = asyncio.create_task(self._receive_final(generation))
@@ -364,6 +388,8 @@ class StreamingSttSession:
                 return SttResult(SttOutcome.DROPPED, reason="stale_result")
 
             self._consecutive_timeouts = 0
+            self._final_wait_started_at = started_at
+            await self._record_stt_timing()
             await self._callbacks.on_final_transcript(self.call_id, transcript)
             return SttResult(SttOutcome.FINAL, transcript=transcript)
 
@@ -456,11 +482,21 @@ async def _receive_browser_audio(
 async def _relay_call_stream(
     websocket: WebSocket,
     session: StreamingSttSession,
+    binding: SttCallBinding,
 ) -> None:
     browser_task = asyncio.create_task(_receive_browser_audio(websocket, session))
     result_task = asyncio.create_task(session.run_finalized_results())
+    tasks = {browser_task, result_task}
+    next_client_event = getattr(binding, "next_client_event", None)
+    if next_client_event is not None:
+
+        async def send_controller_events() -> None:
+            while session.active:
+                await websocket.send_json(await next_client_event())
+
+        tasks.add(asyncio.create_task(send_controller_events()))
     done, pending = await asyncio.wait(
-        {browser_task, result_task},
+        tasks,
         return_when=asyncio.FIRST_COMPLETED,
     )
     for task in pending:
@@ -517,7 +553,10 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
                     "encoding": "pcm_s16le",
                 }
             )
-            await _relay_call_stream(websocket, session)
+            on_connected = getattr(binding, "on_connected", None)
+            if on_connected is not None:
+                await on_connected()
+            await _relay_call_stream(websocket, session, binding)
     except (WebSocketDisconnect, asyncio.CancelledError):
         return
     except Exception:

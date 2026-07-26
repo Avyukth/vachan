@@ -2,6 +2,11 @@
 	import { onDestroy, onMount } from 'svelte';
 
 	import { AgentAudioPlayback, fetchAudioCheck } from '$lib/audio';
+	import { decodeBase64Audio, parseLiveVoiceFrame } from '$lib/audio/live';
+	import {
+		startCallPcm16Capture,
+		type PcmCaptureSession
+	} from '$lib/audio/pcm16';
 	import OperatorConsole from '$lib/components/OperatorConsole.svelte';
 	import type { OperatorConnectionState } from '$lib/operator';
 	import { connectReplay, type ReplayFixture } from '$lib/replay';
@@ -51,6 +56,7 @@
 	);
 	let stopReplay: (() => void) | undefined;
 	let audioCheckAbort: AbortController | undefined;
+	let liveCapture: PcmCaptureSession | undefined;
 	const agentAudio = new AgentAudioPlayback();
 
 	const stateLabels: Record<MicrophoneState, string> = {
@@ -205,6 +211,43 @@
 		}
 	}
 
+	async function stopLiveCapture(): Promise<void> {
+		const capture = liveCapture;
+		liveCapture = undefined;
+		if (capture) await capture.close();
+	}
+
+	async function handleLiveVoiceMessage(message: unknown): Promise<void> {
+		const frame = parseLiveVoiceFrame(message);
+		if (frame === null) {
+			preflightDetail = 'The live voice connection returned an invalid frame; audio was discarded.';
+			return;
+		}
+		if (frame.type === 'ready') {
+			preflightDetail = `Live microphone ready · ${frame.sample_rate} Hz ${frame.encoding}`;
+			return;
+		}
+		if (frame.type === 'transport_error') {
+			preflightDetail = `Live voice degraded: ${frame.detail}`;
+			return;
+		}
+		if (frame.call_id !== activeCallId || takeoverActive) return;
+
+		try {
+			const playback = await agentAudio.play(decodeBase64Audio(frame.audio_base64));
+			if (playback === 'cancelled') return;
+			preflightDetail = frame.timings
+				? `Agent turn ${frame.timings.total_ms} ms · ` +
+					`STT ${frame.timings.stt_ms} · LLM ${frame.timings.llm_ms} · TTS ${frame.timings.tts_ms}`
+				: 'Fixed reviewed opening delivered. Live microphone is listening.';
+		} catch (error: unknown) {
+			preflightDetail =
+				error instanceof Error
+					? `Agent audio was discarded: ${error.message}`
+					: 'Agent audio was discarded because playback failed.';
+		}
+	}
+
 	function chooseCase(event: Event): void {
 		selectedCaseId = (event.currentTarget as HTMLSelectElement).value;
 		resetPreflight('Case changed. Run policy preflight before Start is enabled.');
@@ -276,11 +319,18 @@
 			activeCallId = body.call_id;
 			takeoverActive = false;
 			operatorEndReason = '';
-			preflightDetail = `Active mock call: ${body.call_id}`;
+			liveCapture = await startCallPcm16Capture(body.call_id, (message) => {
+				void handleLiveVoiceMessage(message);
+			});
+			preflightDetail = `Active mock call: ${body.call_id}. Live microphone is connecting.`;
 		} catch (error: unknown) {
-			preflightResult = 'BLOCKED_POLICY';
+			preflightResult = activeCallId ? 'BLOCKED_TECHNICAL' : 'BLOCKED_POLICY';
 			preflightDetail =
-				error instanceof Error ? error.message : 'Start was refused; rerun preflight.';
+				error instanceof Error
+					? error.message
+					: activeCallId
+						? 'The call exists, but live microphone capture failed. End it safely.'
+						: 'Start was refused; rerun preflight.';
 		} finally {
 			preflightBusy = false;
 		}
@@ -294,6 +344,7 @@
 			return;
 		}
 		stopAgentAudio();
+		await stopLiveCapture();
 		try {
 			const response = await fetch(API_ROUTES.callEnd, {
 				method: 'POST',
@@ -327,6 +378,7 @@
 		// The physical demo shares one room and microphone. Stop audible agent
 		// output synchronously on the click; no operator-audio routing is opened.
 		stopAgentAudio();
+		await stopLiveCapture();
 		try {
 			const response = await fetch(API_ROUTES.takeover, {
 				method: 'POST',
@@ -443,6 +495,7 @@
 	onDestroy(() => {
 		stopReplay?.();
 		audioCheckAbort?.abort();
+		void stopLiveCapture();
 		void agentAudio.close();
 	});
 

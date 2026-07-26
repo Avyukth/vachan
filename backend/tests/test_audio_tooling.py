@@ -38,6 +38,14 @@ def _load_script(filename: str) -> list[tuple[Any, ...]]:
     return namespace["SCRIPT"]
 
 
+def _load_fixture_scenarios() -> list[dict[str, Any]]:
+    namespace = runpy.run_path(
+        str(SCRIPT_DIR / "make_audio_fixtures.py"),
+        run_name="audio_fixture_contract",
+    )
+    return namespace["SCENARIOS"]
+
+
 def _slug_sequence(script: list[tuple[Any, ...]]) -> tuple[str, ...]:
     return tuple(row[1] for row in script)
 
@@ -95,3 +103,20 @@ def test_verification_values_remain_borrower_spoken(filename: str) -> None:
 
     for slug in ("verification-values", "fresh-verification-values"):
         assert by_slug[slug][0] in {"rakesh", "borrower"}
+
+
+def test_happy_caller_fixture_is_three_conversational_utterances() -> None:
+    scenarios = _load_fixture_scenarios()
+    happy = [scenario for scenario in scenarios if scenario["path"].startswith("HAPPY")]
+
+    assert [scenario["name"] for scenario in happy] == [
+        "happy_1_borrower_claim",
+        "happy_2_verification_values",
+        "happy_3_promise_offer",
+    ]
+    assert "मैं राकेश" in happy[0]["text"]
+    assert "जन्मतिथि" not in happy[0]["text"]
+    assert "जन्मतिथि" in happy[1]["text"]
+    assert "पंद्रह सौ" not in happy[1]["text"]
+    assert "पंद्रह सौ" in happy[2]["text"]
+    assert "जन्मतिथि" not in happy[2]["text"]

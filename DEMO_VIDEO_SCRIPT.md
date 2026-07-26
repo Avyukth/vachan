@@ -15,6 +15,9 @@ Every beat below was verified working on 26 Jul. Nothing here is aspirational.
   final commit.
 - If driving the caller from fixtures, arm simulated-caller mode **on camera** so the
   `SIMULATED CALLER — PRERECORDED AUDIO` banner is visible. Never hide it.
+- The happy caller is three conversational utterances, with one flush and one agent response
+  between each: **"मैं राकेश बोल रहा हूँ।" first**, then the two verification values, then the
+  promise. Never lead with verification values or combine the three lines into one monologue.
 
 ---
 
@@ -23,7 +26,7 @@ Every beat below was verified working on 26 Jul. Nothing here is aspirational.
 | **0:00–0:10** | Slide 02 of the deck (the 4U problem slide) | "In Indian collections the dialler puts the borrower's name and overdue amount in line one. On a shared handset, a wife or a neighbour learns about the debt before anyone knows who answered." |
 | **0:10–0:20** | Operator console. Cursor on the case list → click **Start mock call** | "This is Priya's console. She makes three actions all call. This is the first." |
 | **0:20–0:34** | WATCH panel filling; identity chip reads **UNVERIFIED**; agent speaks the blind greeting | "The agent speaks first and reveals nothing — no lender, no amount, no reason. It promises it will never ask for an OTP or a PIN, then asks who it is talking to." |
-| **0:34–0:50** | Caller gives the two values. Identity flips **VERIFYING → CONFIRMED** (green). Tool-unlock row appears in EVIDENCE | "Two seeded values, compared in code — never spoken by the agent, never sent to the model. Only now does the loan exist in this conversation at all." |
+| **0:34–0:50** | Caller says **"मैं राकेश बोल रहा हूँ।" first**; only after Vachan asks does he give the two values. Identity flips **UNVERIFIED → VERIFYING → CONFIRMED** (green). Tool-unlock row appears in EVIDENCE | "He identifies himself first. Then two seeded values are compared in code — never spoken by the agent, never sent to the model. Only now does the loan exist in this conversation at all." |
 | **0:50–1:06** | Promise offered. Agent reads back. **Freeze/zoom the read-back line.** Amber COMMITTED chip | "Fifteen hundred rupees, by Friday. It reads that back twice over — words, digits, weekday, absolute date — so a misheard hazaar can never become a debt. Nothing is written until he says yes." |
 | **1:06–1:22** | **THE BEAT.** Phone hands over. Identity chip → **THIRD_PARTY** (rust) in the same turn. Spouse asks the balance. Agent refuses | "Then he hands the phone to his wife. Identity demotes in that same turn, the tools relock — and she asks how much is owed." *(pause 1s, let the refusal play)* "No amount. No lender. No reason." |
 | **1:22–1:34** | EVIDENCE column: scroll the ordered timeline; **FINAL DISPOSITION** bar | "Every decision is an append-only ledger row, including every refusal. One call, exactly one disposition." |

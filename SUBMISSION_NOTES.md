@@ -65,9 +65,9 @@ final artifact:
   `synthetic-hi-IN`; they are not human/live-call repetitions.
 - The artifact is not a substitute for physical end-to-end rehearsal. A final artifact must be
   regenerated after the last code change, and any failure must remain visible with its diagnosis.
-- `sarvam-j8o.1` currently tracks runner/count drift: the live test collection has grown beyond
-  the artifact's hard-coded 13-case wrapper. Until that bead closes and the runner is regenerated,
-  do not present the checked-in `13/13` or `16/16` score as evidence for the current tree.
+- `sarvam-j8o.1` fixed the runner/count drift by keying the contract to stable case IDs and
+  deriving artifact totals. The checked-in score still predates subsequent shared-tree changes;
+  do not present it as current-build evidence until freeze-time regeneration.
 - Until `sarvam-ee1.1` is closed with its production-boundary regressions passing, matrix rows
   11–13 overstate their boundary coverage: they simulate the STT failure, takeover, and capped-case
   outcomes below the actual public transport/route seams. If that bead remains open at freeze, the
@@ -93,8 +93,6 @@ only after its named bead is closed and its acceptance tests pass.
 - `sarvam-ls0.1`: the permission decision is recorded before promise writes, but the asynchronous
   promise mutation is not yet owned by the same authoritative gated execution boundary.
 - `sarvam-a1m`: malformed promise amount/date facts still need stricter fail-closed validation.
-- `sarvam-j8o.1`: the checked-in runner artifact is stale relative to the current collected matrix
-  count and must not be shown as current-build evidence until the wrapper and artifact are updated.
 - `sarvam-1bu`: the published “commit, then hand over the same call” demo sequence conflicts with
   terminal-call semantics. The final demo must use the revised, tested sequence selected by this
   bead; Vachan must never process another turn after a terminal disposition.

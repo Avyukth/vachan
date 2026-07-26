@@ -289,6 +289,42 @@ def test_concurrent_event_writes_have_no_gaps_or_duplicates(
     assert [row["seq"] for row in rows] == list(range(1, 21))
 
 
+def test_domain_mutation_rolls_back_when_its_evidence_insert_fails(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    snapshot = state_snapshot()
+    connection.execute(
+        """
+        CREATE TRIGGER reject_atomic_test_event
+        BEFORE INSERT ON events
+        WHEN NEW.type = 'REJECT_ATOMIC_TEST'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected evidence failure');
+        END
+        """
+    )
+
+    def insert_domain_row() -> None:
+        insert_candidate(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected evidence failure"):
+        ledger.mutate_with_event(
+            call_id="call-001",
+            ts=NOW,
+            event_type="REJECT_ATOMIC_TEST",
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason="injected_atomic_failure",
+            mutation=insert_domain_row,
+        )
+
+    assert connection.execute("SELECT COUNT(*) FROM promise_candidates").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
 def test_operator_ending_atomically_persists_final_evidence_and_disposition(
     connection: sqlite3.Connection,
     ledger: EvidenceLedger,

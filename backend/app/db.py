@@ -12,11 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 SCHEMA_VERSION = 1
 DEMO_MOCK_LABEL = "DEMO / MOCK DATA"
+MutationT = TypeVar("MutationT")
 
 _DISPOSITION_VALUES_SQL = ", ".join(f"'{item.value}'" for item in Disposition)
 
@@ -285,26 +286,56 @@ class EvidenceLedger:
     ) -> int:
         """Allocate and append the next call-local sequence atomically."""
 
+        async with self._write_lock:
+            _, seq = self.mutate_with_event(
+                call_id=call_id,
+                ts=ts,
+                event_type=event_type,
+                state_before=state_before,
+                state_after=state_after,
+                redacted_reason=redacted_reason,
+                mutation=lambda: None,
+            )
+        return seq
+
+    def mutate_with_event(
+        self,
+        *,
+        call_id: str,
+        ts: datetime,
+        event_type: LedgerEventType | str,
+        state_before: StateSnapshot,
+        state_after: StateSnapshot,
+        redacted_reason: str,
+        mutation: Callable[[], MutationT],
+    ) -> tuple[MutationT, int]:
+        """Commit one synchronous domain mutation and its evidence together.
+
+        This boundary deliberately contains no ``await``. Callers use it only
+        after their authorization recheck, so neither state nor another task
+        can interleave between the domain write and append-only evidence.
+        """
+
         event_name = event_type.value if isinstance(event_type, LedgerEventType) else event_type
         if not event_name.strip():
             raise ValueError("event_type must not be empty")
         if not redacted_reason.strip():
             raise ValueError("redacted_reason must not be empty")
 
-        async with self._write_lock:
-            with _immediate_transaction(self.connection):
-                seq = _next_event_sequence(self.connection, call_id)
-                _insert_event_row(
-                    self.connection,
-                    call_id=call_id,
-                    seq=seq,
-                    ts=ts,
-                    event_type=event_name,
-                    state_before=state_before,
-                    state_after=state_after,
-                    redacted_reason=redacted_reason,
-                )
-        return seq
+        with _immediate_transaction(self.connection):
+            result = mutation()
+            seq = _next_event_sequence(self.connection, call_id)
+            _insert_event_row(
+                self.connection,
+                call_id=call_id,
+                seq=seq,
+                ts=ts,
+                event_type=event_name,
+                state_before=state_before,
+                state_after=state_after,
+                redacted_reason=redacted_reason,
+            )
+        return result, seq
 
     async def set_ended_operator(
         self,

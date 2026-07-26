@@ -19,6 +19,7 @@ from typing import Any, Protocol
 from app.actions import (
     Intent,
     PreConfirmationIntent,
+    PreConfirmationValidationResult,
     validate_llm_action,
     validate_preconfirmation_classification,
 )
@@ -112,6 +113,14 @@ def _action_payload(response: Mapping[str, object]) -> dict[str, object]:
     except json.JSONDecodeError:
         return {"intent": "other"}
     return payload if isinstance(payload, dict) else {"intent": "other"}
+
+
+def controller_preconfirmation_template(
+    validation: PreConfirmationValidationResult,
+) -> TemplateId:
+    """Convert the validated model route to the controller's reviewed template enum."""
+
+    return TemplateId(validation.template.value)
 
 
 class DialogueController:
@@ -358,6 +367,7 @@ class DialogueController:
     ) -> tuple[str, Disposition | None]:
         validation = validate_preconfirmation_classification(payload)
         proposed = validation.classification.intent
+        validated_template = controller_preconfirmation_template(validation)
 
         # The blocked-prose matrix case deliberately exercises the fourth layer.
         untrusted_draft = payload.get("response_draft")
@@ -379,9 +389,29 @@ class DialogueController:
                     IdentityState.THIRD_PARTY,
                     reason_code=route.reason_code,
                 )
-            return render_template(route.template_id), None
+                return render_template(route.template_id), None
+            if route.identity_target is IdentityState.VERIFYING:
+                return render_template(route.template_id), None
+            if route.reason_code != "speaker_identity_unresolved":
+                return render_template(route.template_id), None
+            return render_template(validated_template), None
 
         if self.snapshot.identity is IdentityState.THIRD_PARTY:
+            # A model label cannot unlock a shared handset. Only the deterministic
+            # explicit-borrower matcher may start a fresh verification epoch.
+            route = route_speaker_utterance(
+                transcript,
+                proposed_intent=PreConfirmationIntent.OTHER,
+            )
+            if route.identity_target is IdentityState.VERIFYING:
+                await self._coordinator.transition(
+                    IdentityState.VERIFYING,
+                    reason_code="borrower_returned_fresh_verification",
+                )
+                self.verification = VerificationSession()
+                self.third_party = ThirdPartySession()
+                self.history = ()
+                return render_template(TemplateId.VERIFY_REQUEST), None
             hold = self.third_party.next_hold()
             if self.third_party.response_count == 3:
                 await self._schedule_third_party_callback()
@@ -397,7 +427,11 @@ class DialogueController:
         if route.identity_target is IdentityState.THIRD_PARTY:
             hold = self.third_party.next_hold()
             return hold.text, None
-        return render_template(route.template_id), None
+        if route.identity_target is IdentityState.VERIFYING:
+            return render_template(route.template_id), None
+        if route.reason_code != "speaker_identity_unresolved":
+            return render_template(route.template_id), None
+        return render_template(validated_template), None
 
     async def _prepare_promise(self, transcript: str, amount_minor: int, date_phrase: str) -> str:
         normalized_date = normalize_promise_date(

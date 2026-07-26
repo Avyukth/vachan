@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from app.db import EvidenceLedger
 from app.llm import (
     MAX_RESPONSE_TOKENS,
     LLMIntegrationError,
+    LLMUnavailable,
     SarvamChatClient,
 )
 from app.protocol import TransportMode
@@ -28,6 +30,7 @@ from app.templates import template_id_for_reviewed_text
 JsonObject = dict[str, Any]
 _CASES_BY_ID = {case.case_id: case for case in DEMO_CASES}
 PRODUCTION_VOICE_LLM_TIMEOUT_SECONDS = 15.0
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,12 +68,14 @@ class ProductionDialogueClient:
             safe_messages.append({"role": role, "content": content})
 
         started_at = time.perf_counter()
-        content = await self._chat.complete(
-            safe_messages,
-            timeout_seconds=PRODUCTION_VOICE_LLM_TIMEOUT_SECONDS,
-            max_tokens=MAX_RESPONSE_TOKENS,
-        )
-        self.last_llm_ms = (time.perf_counter() - started_at) * 1000
+        try:
+            content = await self._chat.complete(
+                safe_messages,
+                timeout_seconds=PRODUCTION_VOICE_LLM_TIMEOUT_SECONDS,
+                max_tokens=MAX_RESPONSE_TOKENS,
+            )
+        finally:
+            self.last_llm_ms = (time.perf_counter() - started_at) * 1000
         return {
             "choices": [
                 {
@@ -186,7 +191,22 @@ class VoiceCallBinding:
             started_at = time.perf_counter()
             try:
                 turn = await self.controller.run_transcript(transcript)
+            except LLMUnavailable as error:
+                reason_code = error.safe_reason_code
+                _LOGGER.warning(
+                    "voice_llm_failure call_id=%s category=%s elapsed_ms=%d",
+                    self.call_id,
+                    error.category.value,
+                    round(self._dialogue_client.last_llm_ms),
+                )
+                await self._end_technical_locked(reason_code)
+                return
             except LLMIntegrationError:
+                _LOGGER.warning(
+                    "voice_llm_failure call_id=%s category=unavailable elapsed_ms=%d",
+                    self.call_id,
+                    round(self._dialogue_client.last_llm_ms),
+                )
                 await self._end_technical_locked("llm_unavailable")
                 return
             except SarvamTextToSpeechError:

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import httpx
 import pytest
 
 from app.actions import Intent, PreConfirmationIntent, PreConfirmationTemplate
@@ -17,7 +18,9 @@ from app.llm import (
     CallLLMBudget,
     DecisionSource,
     LLMBudgetExhausted,
+    LLMFailureCategory,
     LLMUnavailable,
+    SarvamChatClient,
     VachanLLMSession,
     deterministic_preconfirmation_intent,
 )
@@ -236,6 +239,117 @@ def test_default_budget_bounds_six_live_reasoning_completions() -> None:
     assert budget.tokens_reserved == 24_576
     with pytest.raises(LLMBudgetExhausted, match="budget is exhausted"):
         budget.reserve(MAX_RESPONSE_TOKENS)
+
+
+async def _chat_outcome(
+    handler,
+) -> str:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        return await SarvamChatClient(
+            "credential-must-not-leak",
+            http_client=http_client,
+        ).complete(
+            [{"role": "user", "content": "prompt-must-not-leak"}],
+            timeout_seconds=1,
+            max_tokens=32,
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    [
+        (401, LLMFailureCategory.AUTHENTICATION),
+        (403, LLMFailureCategory.AUTHENTICATION),
+        (400, LLMFailureCategory.REQUEST_REJECTED),
+        (429, LLMFailureCategory.RATE_LIMITED),
+        (500, LLMFailureCategory.UPSTREAM),
+        (503, LLMFailureCategory.UPSTREAM),
+    ],
+)
+def test_chat_http_failures_expose_only_safe_categories(
+    status: int,
+    category: LLMFailureCategory,
+) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status,
+            json={"secret_response_body": "must-not-leak"},
+        )
+
+    with pytest.raises(LLMUnavailable) as captured:
+        asyncio.run(_chat_outcome(handler))
+
+    assert captured.value.category is category
+    rendered = repr(captured.value)
+    assert "credential-must-not-leak" not in rendered
+    assert "prompt-must-not-leak" not in rendered
+    assert "secret_response_body" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "category"),
+    [
+        (
+            lambda request: httpx.ReadTimeout("private timeout detail", request=request),
+            LLMFailureCategory.TIMEOUT,
+        ),
+        (
+            lambda request: httpx.ConnectError("private transport detail", request=request),
+            LLMFailureCategory.TRANSPORT,
+        ),
+    ],
+)
+def test_chat_network_failures_expose_only_safe_categories(
+    error_factory,
+    category: LLMFailureCategory,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise error_factory(request)
+
+    with pytest.raises(LLMUnavailable) as captured:
+        asyncio.run(_chat_outcome(handler))
+
+    assert captured.value.category is category
+    assert "private" not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("response", "category"),
+    [
+        (
+            httpx.Response(200, content=b"response-body-must-not-leak"),
+            LLMFailureCategory.INVALID_RESPONSE,
+        ),
+        (
+            httpx.Response(
+                200,
+                json={"secret_response_body": "must-not-leak"},
+            ),
+            LLMFailureCategory.INVALID_RESPONSE,
+        ),
+        (
+            httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "  "}}]},
+            ),
+            LLMFailureCategory.EMPTY_CONTENT,
+        ),
+    ],
+)
+def test_chat_invalid_responses_expose_only_safe_categories(
+    response: httpx.Response,
+    category: LLMFailureCategory,
+) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return response
+
+    with pytest.raises(LLMUnavailable) as captured:
+        asyncio.run(_chat_outcome(handler))
+
+    assert captured.value.category is category
+    rendered = repr(captured.value)
+    assert "response-body-must-not-leak" not in rendered
+    assert "secret_response_body" not in rendered
 
 
 def test_pre_and_post_roles_reject_wrong_context_side() -> None:

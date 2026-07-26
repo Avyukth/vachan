@@ -40,8 +40,37 @@ class LLMIntegrationError(RuntimeError):
     """Safe base error that never includes prompts, drafts, or credentials."""
 
 
+class LLMFailureCategory(StrEnum):
+    """Allowlisted upstream failure categories safe for logs and evidence."""
+
+    UNAVAILABLE = "unavailable"
+    TIMEOUT = "timeout"
+    TRANSPORT = "transport"
+    AUTHENTICATION = "authentication"
+    RATE_LIMITED = "rate_limited"
+    REQUEST_REJECTED = "request_rejected"
+    UPSTREAM = "upstream"
+    INVALID_RESPONSE = "invalid_response"
+    EMPTY_CONTENT = "empty_content"
+
+
 class LLMUnavailable(LLMIntegrationError):
     """The Sarvam chat dependency failed or returned an invalid envelope."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: LLMFailureCategory = LLMFailureCategory.UNAVAILABLE,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+
+    @property
+    def safe_reason_code(self) -> str:
+        """Return an allowlisted reason that contains no upstream response data."""
+
+        return f"llm_{self.category.value}"
 
 
 class LLMBudgetExhausted(LLMIntegrationError):
@@ -148,21 +177,57 @@ class SarvamChatClient:
                         json=payload,
                         timeout=timeout_seconds,
                     )
+        except httpx.TimeoutException as error:
+            raise LLMUnavailable(
+                "Sarvam chat exceeded its bounded deadline",
+                category=LLMFailureCategory.TIMEOUT,
+            ) from error
+        except httpx.TransportError as error:
+            raise LLMUnavailable(
+                "Sarvam chat transport is unavailable",
+                category=LLMFailureCategory.TRANSPORT,
+            ) from error
+        except httpx.HTTPError as error:
+            raise LLMUnavailable(
+                "Sarvam chat request failed",
+                category=LLMFailureCategory.UNAVAILABLE,
+            ) from error
+
+        try:
             response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            if status in {401, 403}:
+                category = LLMFailureCategory.AUTHENTICATION
+            elif status == 429:
+                category = LLMFailureCategory.RATE_LIMITED
+            elif status >= 500:
+                category = LLMFailureCategory.UPSTREAM
+            else:
+                category = LLMFailureCategory.REQUEST_REJECTED
+            raise LLMUnavailable(
+                "Sarvam chat rejected the request",
+                category=category,
+            ) from error
+
+        try:
             body = response.json()
             content = body["choices"][0]["message"]["content"]
-        except (
-            httpx.HTTPError,
-            ValueError,
-            KeyError,
-            IndexError,
-            TypeError,
-        ) as error:
+        except (ValueError, KeyError, IndexError, TypeError) as error:
             raise LLMUnavailable(
-                "Sarvam chat is unavailable or returned an invalid response"
+                "Sarvam chat returned an invalid response",
+                category=LLMFailureCategory.INVALID_RESPONSE,
             ) from error
-        if not isinstance(content, str) or not content.strip():
-            raise LLMUnavailable("Sarvam chat returned empty content")
+        if not isinstance(content, str):
+            raise LLMUnavailable(
+                "Sarvam chat returned an invalid response",
+                category=LLMFailureCategory.INVALID_RESPONSE,
+            )
+        if not content.strip():
+            raise LLMUnavailable(
+                "Sarvam chat returned empty content",
+                category=LLMFailureCategory.EMPTY_CONTENT,
+            )
         return content
 
 
@@ -232,7 +297,10 @@ class VachanLLMSession:
                 timeout=timeout_seconds,
             )
         except TimeoutError as error:
-            raise LLMUnavailable("Sarvam chat exceeded its bounded deadline") from error
+            raise LLMUnavailable(
+                "Sarvam chat exceeded its bounded deadline",
+                category=LLMFailureCategory.TIMEOUT,
+            ) from error
 
     async def classify_preconfirmation(
         self,

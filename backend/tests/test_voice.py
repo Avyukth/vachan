@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from app.controller import DialogueController, _action_payload
 from app.db import EvidenceLedger
-from app.llm import LLMUnavailable
+from app.llm import LLMFailureCategory, LLMUnavailable
 from app.protocol import TransportMode
 from app.seeds import RAKESH_CASE
 from app.states import IdentityState, PromiseState
@@ -448,6 +451,54 @@ def test_voice_binding_attributes_llm_failure_without_relabeling_it_as_stt(
     ]
     assert "technical_failure:llm_unavailable" in reasons
     assert all("stt_network_failure" not in reason for reason in reasons)
+
+
+def test_voice_binding_records_safe_llm_failure_category(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    binding, dialogue = _existing_voice_call(
+        db_connection,
+        call_id="call-live-llm-timeout",
+        frozen_demo_clock=frozen_demo_clock,
+    )
+    dialogue.last_llm_ms = 15_004.7
+    dialogue.actions[0] = LLMUnavailable(
+        "prompt-and-response-must-not-leak",
+        category=LLMFailureCategory.TIMEOUT,
+    )
+
+    async def exercise() -> None:
+        await binding.on_connected()
+        await binding.next_client_event()
+        with caplog.at_level(logging.WARNING, logger="app.voice"):
+            await binding.on_final_transcript(binding.call_id, "Rakesh bol raha hoon")
+        assert await binding.next_client_event() == {
+            "type": "call_degraded",
+            "call_id": binding.call_id,
+            "reason": "llm_timeout",
+        }
+
+    asyncio.run(exercise())
+
+    event_rows = db_connection.execute(
+        """
+        SELECT type, redacted_reason
+        FROM events
+        WHERE call_id = ?
+        ORDER BY seq
+        """,
+        (binding.call_id,),
+    ).fetchall()
+    assert [row["type"] for row in event_rows].count("TECHNICAL_FAILURE") == 1
+    assert [row["type"] for row in event_rows].count("DISPOSITION_SET") == 1
+    assert "technical_failure:llm_timeout" in {row["redacted_reason"] for row in event_rows}
+    assert "call_id=call-live-llm-timeout" in caplog.text
+    assert "category=timeout" in caplog.text
+    assert "elapsed_ms=15005" in caplog.text
+    assert "prompt-and-response-must-not-leak" not in caplog.text
+    assert "Rakesh bol raha hoon" not in caplog.text
 
 
 def test_normal_operator_end_releases_the_case_for_a_fresh_call(

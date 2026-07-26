@@ -9,9 +9,14 @@
 	import {
 		INITIAL_SIMULATED_CALLER_DISCLOSURE,
 		advanceSimulatedCallerDisclosure,
+		clearSimulatedCallerDisclosure,
+		persistSimulatedCallerDisclosure,
+		restoreSimulatedCallerDisclosure,
 		type SimulatedCallerDisclosure
 	} from '$lib/audio/simCallerDisclosure';
 	import { SIM_CALLER_LABEL } from '$lib/audio/simCallerGate';
+
+	const ACTIVE_CALL_STORAGE_KEY = 'vachan.activeCallId';
 
 	type SimulatedCallerUiState = 'idle' | 'confirming' | 'injecting' | 'complete' | 'error';
 
@@ -30,15 +35,30 @@
 	let lifecycleCallId = '';
 
 	$effect(() => {
-		const nextCallId = activeCallId;
+		// During a same-call reload the page deliberately restores the call in
+		// evidence-only mode, so the active prop is blank while this durable marker
+		// still identifies the call whose disclosure must remain visible.
+		const nextCallId =
+			activeCallId || sessionStorage.getItem(ACTIVE_CALL_STORAGE_KEY)?.trim() || '';
 		if (nextCallId === lifecycleCallId) return;
-		const lifecycleEvent = nextCallId ? 'new_call' : 'terminal_disposition';
-		disclosure = advanceSimulatedCallerDisclosure(disclosure, lifecycleEvent);
+		if (lifecycleCallId) {
+			// The page removes its active-call marker only at a durable terminal/reset
+			// boundary. A direct non-empty change is a genuinely different call.
+			clearSimulatedCallerDisclosure(sessionStorage, lifecycleCallId);
+		}
 		lifecycleCallId = nextCallId;
+		disclosure = nextCallId
+			? restoreSimulatedCallerDisclosure(sessionStorage, nextCallId)
+			: INITIAL_SIMULATED_CALLER_DISCLOSURE;
 		uiState = 'idle';
 		detail = '';
 		void cancelSession();
 	});
+
+	function advanceDisclosure(event: Parameters<typeof advanceSimulatedCallerDisclosure>[1]): void {
+		disclosure = advanceSimulatedCallerDisclosure(disclosure, event);
+		persistSimulatedCallerDisclosure(sessionStorage, lifecycleCallId, disclosure);
+	}
 
 	async function cancelSession(): Promise<void> {
 		const activeSession = session;
@@ -47,7 +67,7 @@
 	}
 
 	async function stop(event: 'stopped' | 'takeover_requested' | 'end_requested'): Promise<void> {
-		disclosure = advanceSimulatedCallerDisclosure(disclosure, event);
+		advanceDisclosure(event);
 		await cancelSession();
 		uiState = 'complete';
 		detail = 'Prerecorded input stopped. Disclosure remains visible until terminal disposition.';
@@ -81,24 +101,24 @@
 			session = await startSimulatedCaller(activeCallId, fixture.url, {
 				onServerEvent: onVoiceMessage,
 				onFirstFrame: () => {
-					disclosure = advanceSimulatedCallerDisclosure(disclosure, 'first_frame');
+					advanceDisclosure('first_frame');
 				},
 				onLocalError: (message) => {
 					failedLocally = true;
-					disclosure = advanceSimulatedCallerDisclosure(disclosure, 'failed');
+					advanceDisclosure('failed');
 					uiState = 'error';
 					detail = `Local prerecorded-input error: ${message}`;
 				}
 			});
 			await session.done;
 			if (!failedLocally) {
-				disclosure = advanceSimulatedCallerDisclosure(disclosure, 'completed');
+				advanceDisclosure('completed');
 				uiState = 'complete';
 				detail =
 					'Prerecorded input finished and flushed. Disclosure remains until terminal disposition.';
 			}
 		} catch (error: unknown) {
-			disclosure = advanceSimulatedCallerDisclosure(disclosure, 'failed');
+			advanceDisclosure('failed');
 			uiState = 'error';
 			detail =
 				error instanceof Error ? error.message : 'Prerecorded caller input could not start.';

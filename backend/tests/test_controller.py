@@ -11,6 +11,7 @@ from app.contracts import Disposition, LedgerEventType
 from app.controller import ControllerClosedError, DialogueController
 from app.db import EvidenceLedger
 from app.seeds import RAKESH_CASE
+from app.states import PromiseState
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
 
@@ -19,6 +20,7 @@ def _controller(
     frozen_demo_clock,
     *,
     call_id: str,
+    turns: tuple[ScriptedTurn, ...] | None = None,
 ) -> DialogueController:
     return DialogueController(
         call_id=call_id,
@@ -27,7 +29,7 @@ def _controller(
         sarvam=FakeSarvamClient(
             SarvamScenario(
                 name=call_id,
-                turns=(ScriptedTurn("unused", {"intent": "other"}),),
+                turns=turns or (ScriptedTurn("unused", {"intent": "other"}),),
             )
         ),
         clock=frozen_demo_clock.now,
@@ -49,27 +51,32 @@ def _terminal_evidence(
     ).fetchall()
 
 
+@pytest.mark.parametrize(
+    "business_disposition",
+    [Disposition.PROMISE_CONFIRMED, Disposition.CALLBACK_THIRD_PARTY],
+)
 def test_concurrent_conflicting_dispositions_persist_one_consistent_winner(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,
+    business_disposition: Disposition,
 ) -> None:
     business_controller = _controller(
         db_connection,
         frozen_demo_clock,
-        call_id="call-terminal-conflict",
+        call_id=f"call-terminal-conflict-{business_disposition.value.casefold()}",
     )
     technical_controller = _controller(
         db_connection,
         frozen_demo_clock,
-        call_id="call-terminal-conflict",
+        call_id=business_controller.call_id,
     )
 
-    async def exercise() -> list[None | BaseException]:
+    async def exercise() -> list[object]:
         await business_controller.start()
         await technical_controller.activate_existing_call()
         return await asyncio.gather(
             business_controller._set_disposition(  # noqa: SLF001
-                Disposition.PROMISE_CONFIRMED,
+                business_disposition,
                 reason_code="audit_business",
             ),
             technical_controller._set_disposition(  # noqa: SLF001
@@ -130,6 +137,56 @@ def test_concurrent_duplicate_disposition_is_idempotent(
     assert persisted["disposition"] == Disposition.ENDED_TECHNICAL.value
     assert controller.disposition is Disposition.ENDED_TECHNICAL
     assert len(_terminal_evidence(db_connection, controller.call_id)) == 1
+
+
+def test_technical_ending_at_read_back_rejects_stale_affirmative(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    controller = _controller(
+        db_connection,
+        frozen_demo_clock,
+        call_id="call-terminal-promise-read-back",
+        turns=(
+            ScriptedTurn("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+            ScriptedTurn(
+                "चौदह सितंबर, reference 4729",
+                {"intent": "verification_response"},
+            ),
+            ScriptedTurn(
+                "pandrah sau Friday",
+                {
+                    "intent": "offer_promise",
+                    "amount_minor": 150_000,
+                    "date_phrase": "Friday",
+                },
+            ),
+            ScriptedTurn("haan", {"intent": "confirm"}),
+        ),
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        await controller.run_turn()
+        await controller.run_turn()
+        await controller.run_turn()
+        assert controller.snapshot.promise is PromiseState.READ_BACK
+
+        await controller.technical_failure("stt")
+        with pytest.raises(ControllerClosedError):
+            await controller.run_turn()
+
+    asyncio.run(exercise())
+
+    assert controller.disposition is Disposition.ENDED_TECHNICAL
+    assert len(_terminal_evidence(db_connection, controller.call_id)) == 1
+    assert (
+        db_connection.execute(
+            "SELECT COUNT(*) FROM promises WHERE call_id = ?",
+            (controller.call_id,),
+        ).fetchone()[0]
+        == 0
+    )
 
 
 @pytest.mark.parametrize(

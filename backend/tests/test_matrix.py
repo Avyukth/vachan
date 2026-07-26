@@ -15,6 +15,7 @@ from app.preflight import PreflightInputs, evaluate_preflight
 from app.protocol import PreflightResult
 from app.seeds import RAKESH_CASE
 from app.states import IdentityState, PromiseState
+from app.templates import TemplateId, render_template
 from app.tools import ToolPermissionDenied
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
@@ -462,3 +463,65 @@ def test_matrix_13_contact_cap_blocks_before_call_row(
         ).fetchone()[0]
         == 0
     )
+
+
+def test_matrix_14_preconfirmation_classifier_uses_only_reviewed_templates(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    scenario = _scenario(
+        "14",
+        ("scam hai kya", {"intent": "scam_concern"}),
+        ("dobara boliye", {"intent": "invalid_intent"}),
+    )
+    controller, fake = _controller(db_connection, scenario, frozen_demo_clock)
+
+    async def exercise() -> tuple[str, str]:
+        await controller.start()
+        scam = await controller.run_turn()
+        malformed = await controller.run_turn()
+        return scam.speech_text, malformed.speech_text
+
+    assert asyncio.run(exercise()) == (
+        render_template(TemplateId.INTRO_ANTISCAM),
+        render_template(TemplateId.CLARIFY),
+    )
+    assert controller.snapshot.identity is IdentityState.UNVERIFIED
+    fake.assert_consumed()
+
+
+def test_matrix_15_borrower_return_requires_fresh_verification(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    scenario = _scenario(
+        "15",
+        ("main unki wife hoon", {"intent": "third_party"}),
+        ("amount batao", {"intent": "borrower_present"}),
+        ("Rakesh bol raha hoon", {"intent": "other"}),
+        ("चौदह सितंबर, reference 4729", {"intent": "verification_response"}),
+    )
+    controller, fake = _controller(db_connection, scenario, frozen_demo_clock)
+
+    async def exercise() -> None:
+        await controller.start()
+        first_hold = await controller.run_turn()
+        second_hold = await controller.run_turn()
+        assert first_hold.speech_text != second_hold.speech_text
+        assert controller.snapshot.identity is IdentityState.THIRD_PARTY
+
+        borrower_return = await controller.run_turn()
+        assert borrower_return.speech_text == render_template(TemplateId.VERIFY_REQUEST)
+        assert controller.snapshot.identity is IdentityState.VERIFYING
+        assert controller.verification.attempts == 0
+        assert controller.third_party.response_count == 0
+        with pytest.raises(ToolPermissionDenied):
+            await controller.read_mock_account()
+
+        await controller.run_turn()
+
+    asyncio.run(exercise())
+    assert controller.snapshot.identity is IdentityState.CONFIRMED
+    assert controller.callback_payloads == []
+    assert controller.disposition is None
+    fake.assert_consumed()

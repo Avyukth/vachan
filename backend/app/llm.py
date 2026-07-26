@@ -26,8 +26,19 @@ from app.states import CallState, IdentityState, PromiseState
 SARVAM_CHAT_URL = "https://api.sarvam.ai/v1/chat/completions"
 SARVAM_CHAT_MODEL = "sarvam-30b"
 SARVAM_CHAT_TEMPERATURE = 0.1
-PRECONFIRMATION_TIMEOUT_SECONDS = 2.0
-POSTCONFIRMATION_TIMEOUT_SECONDS = 4.0
+# Budgets measured against the real sarvam-30b endpoint on 26 Jul, not guessed. Observed
+# per-turn llm_ms across live ledger runs: 2327, 2349, 2941, 3107, 3154, 3253, 3323, 3461,
+# 3812, 3949, 4126, 4156, 4212, 4376, 4622, 4904, 5226, 5258, 5712, 5861, 6143, 6279, 6317,
+# 6525, 6953, 7529, 8182, 10126 ms. The previous 4.0 s post-confirmation budget sat BELOW
+# the median, so the promise turn timed out almost every run and killed the call right after
+# verification passed (ledger call-93d2db40 seq 13-16: llm_timeout_technical_failure at
+# elapsed_ms=15116, immediately after CONFIRMED at seq 11).
+#
+# These are deliberately generous: a timeout shorter than the service's real latency is not
+# a safety control, it is a guaranteed outage. The call still fails closed on a genuine
+# hang - it just no longer fails on normal operation.
+PRECONFIRMATION_TIMEOUT_SECONDS = 8.0
+POSTCONFIRMATION_TIMEOUT_SECONDS = 15.0
 # Sarvam's reasoning tokens count against this limit even though only ``content``
 # reaches the controller. Live API validation showed limits through 1536 could
 # still truncate before the compact JSON answer for the real isolated prompt.
@@ -236,6 +247,15 @@ def _normalized_text(text: str) -> str:
     return " ".join(re.sub(r"[^\w\u0900-\u097f]+", " ", value).split())
 
 
+# Devanagari spellings of the seeded borrower first names. Hindi transcripts are
+# the normal live case, not an edge case.
+DEVANAGARI_FIRST_NAMES: dict[str, tuple[str, ...]] = {
+    "rakesh": ("राकेश",),
+    "meera": ("मीरा",),
+    "farida": ("फरीदा", "फ़रीदा"),
+}
+
+
 def deterministic_preconfirmation_intent(
     utterance: str,
     *,
@@ -264,7 +284,10 @@ def deterministic_preconfirmation_intent(
         return PreConfirmationIntent.SCAM_CONCERN
 
     first_name = _normalized_text(borrower_display_name).split()[0]
-    if first_name and re.search(rf"\b{re.escape(first_name)}\b", text):
+    # The live Saaras stream is opened with language_code="hi-IN", so a real
+    # transcript is Devanagari and a Roman-only comparison never fires.
+    name_forms = (first_name, *DEVANAGARI_FIRST_NAMES.get(first_name, ()))
+    if any(form and re.search(rf"\b{re.escape(form)}\b", text) for form in name_forms):
         return PreConfirmationIntent.BORROWER_PRESENT
     if text in {"haan boliye", "हां बोलिए", "हाँ बोलिए"}:
         return PreConfirmationIntent.BORROWER_PRESENT

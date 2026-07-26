@@ -29,6 +29,7 @@ from app.db import EvidenceLedger, TerminalDispositionConflict
 from app.gated_tools import GatedToolExecutor, ToolFacts
 from app.guard import OutputBlockedEvent, OutputGuardContext, classify_block, guard_for_tts
 from app.handover import HandoverBoundary, HandoverOutcome
+from app.llm import deterministic_preconfirmation_intent
 from app.promise import (
     AmbiguousDateError,
     InvalidAmountError,
@@ -60,12 +61,17 @@ from app.verification import (
     VerificationStatus,
     VerificationSubmission,
     collect_verification_attempt,
+    normalize_birth_day_month,
+    normalize_reference_last4,
     verification_input_marker,
 )
 from app.verification_evidence import VerificationEvidenceRepository
 
 JsonObject = dict[str, Any]
 Clock = Callable[[], datetime]
+# Three user/assistant exchanges. Enough context for a classifier or a promise
+# correction, small enough that turn latency cannot grow without bound.
+MAX_PROMPT_HISTORY_MESSAGES = 6
 
 
 class SarvamDialogueClient(Protocol):
@@ -613,7 +619,22 @@ class DialogueController:
                 return untrusted_draft, None
 
         if self.snapshot.identity is IdentityState.VERIFYING:
-            if proposed is PreConfirmationIntent.VERIFICATION_RESPONSE:
+            # The model must not be a gate in FRONT of the comparator. Observed live: a
+            # borrower said the reference digits, the classifier failed to label the turn
+            # VERIFICATION_RESPONSE, so code never got to compare and identity stayed
+            # VERIFYING forever (ledger call-91dead9d, seq 5-11: one submission for two
+            # supplied fields, so the split-turn attempt could never complete).
+            #
+            # Opening the comparator grants nothing on its own: only
+            # collect_verification_attempt can return CONFIRMED, the tool matrix still
+            # requires VERIFYING + ACTIVE + attempts remaining, and both normalizers are
+            # value-free - they return a normalized form and never log the spoken value.
+            # This moves the decision from the model to code, which is the whole thesis.
+            if (
+                proposed is PreConfirmationIntent.VERIFICATION_RESPONSE
+                or normalize_birth_day_month(transcript) is not None
+                or normalize_reference_last4(transcript) is not None
+            ):
                 return await self._submit_verification(transcript)
             route = route_speaker_utterance(transcript, proposed_intent=proposed)
             if route.identity_target is IdentityState.THIRD_PARTY:
@@ -640,6 +661,16 @@ class DialogueController:
                 return hold.text, Disposition.CALLBACK_THIRD_PARTY
             return hold.text, None
 
+        if proposed is PreConfirmationIntent.OTHER:
+            # ``other`` is what _action_payload manufactures for ANY unparseable
+            # model content, so an UNVERIFIED speaker could never reach VERIFYING
+            # when sarvam-30b narrated instead of emitting JSON. Fall back to the
+            # deterministic keyword matcher; it proposes only a route, and code
+            # still owns every transition and the verification comparator.
+            proposed = deterministic_preconfirmation_intent(
+                transcript,
+                borrower_display_name=self.case.borrower_display_name,
+            )
         route = route_speaker_utterance(transcript, proposed_intent=proposed)
         if route.identity_target is not None:
             await self._coordinator.transition(
@@ -934,7 +965,11 @@ class DialogueController:
             promise_state=self.snapshot.promise,
             case=self.case,
             current_utterance=model_utterance,
-            history=self.history,
+            # Unbounded history grew the prompt by two messages per turn, and a
+            # prompt of repeated identical clarifications lengthened every later
+            # turn. The audit trail stays whole in self.history; only the model
+            # sees the recent window.
+            history=self.history[-MAX_PROMPT_HISTORY_MESSAGES:],
         )
         chat = await self.sarvam.chat_completion(context.as_api_messages())
         payload = _action_payload(chat)

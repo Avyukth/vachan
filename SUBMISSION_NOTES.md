@@ -68,10 +68,11 @@ final artifact:
 - `sarvam-j8o.1` fixed the runner/count drift by keying the contract to stable case IDs and
   deriving artifact totals. The checked-in score still predates subsequent shared-tree changes;
   do not present it as current-build evidence until freeze-time regeneration.
-- The human ship-mode decision allows focused tests to land before the shared full suite is
-  revalidated. `sarvam-7m1` owns that deferred verification audit. Any coverage still verified
-  only by a focused file at submission time must be labeled as such rather than implied to have
-  passed the complete suite.
+- `sarvam-7m1` completed the deferred ship-mode verification audit. At its close, all 40 test
+  files were collected; backend Ruff/format and 530 tests passed with seven deliberate CE-memory
+  skips; frontend tests passed 15/15 with a clean Svelte check; and the real evidence runner passed
+  16/16. Active post-audit changes still require the final freeze-time gates and artifact
+  regeneration below.
 - Cut `context.py` and `memory.py` experiments are not production-wired and are not counted as
   shipped coverage. Their isolated or intentionally skipped tests do not prove the active
   `context_isolation.py` boundary.
@@ -136,8 +137,8 @@ Do not submit until each item has an owner and an explicit result:
 - [ ] Backend Ruff, format check, and full pytest suite pass from the frozen tree.
 - [ ] Frontend tests, Svelte check, and production build pass from the frozen tree.
 - [ ] The evidence runner is regenerated; its build identifier and timestamp match the frozen tree.
-- [ ] `sarvam-7m1` has reconciled ship-mode focused tests against the full suite, or every
-      still-unverified coverage claim is explicitly disclosed.
+- [x] `sarvam-7m1` reconciled ship-mode focused tests against the full suite; cut, unwired
+      context/memory experiments remain explicitly excluded from shipped coverage.
 - [ ] Every open fix-or-disclose bead above is either closed with passing tests or retained as a
       limitation.
 - [ ] `sarvam-1bu` has selected one executable demo sequence and all post-terminal wording is

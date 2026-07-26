@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.db import EvidenceLedger, migrate_schema
 from app.preflight import (
     AUDIO_OUTPUT_HEADER,
+    CONTACT_CAP_POLICY_DETAIL,
     MICROPHONE_HEADER,
     PreflightInputs,
     evaluate_preflight,
@@ -101,6 +102,9 @@ def test_contact_cap_is_a_non_overridable_policy_block_without_call_row() -> Non
     assert "cannot override" in next(
         check.detail for check in response.checks if check.name == "contact_cap"
     )
+    assert next(check.detail for check in response.checks if check.name == "contact_cap") == (
+        CONTACT_CAP_POLICY_DETAIL
+    )
     assert connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
     connection.close()
 
@@ -174,7 +178,15 @@ def test_capped_case_endpoint_blocks_without_creating_a_call(
     )
 
     assert response.status_code == 200
-    assert response.json()["result"] == PreflightResult.BLOCKED_POLICY
+    body = response.json()
+    assert body["result"] == PreflightResult.BLOCKED_POLICY
+    contact_cap = next(check for check in body["checks"] if check["name"] == "contact_cap")
+    assert contact_cap == {
+        "api_version": PROTOCOL_VERSION,
+        "name": "contact_cap",
+        "pass": False,
+        "detail": CONTACT_CAP_POLICY_DETAIL,
+    }
     denied_start = preflight_client.post(
         "/api/call/start",
         json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},

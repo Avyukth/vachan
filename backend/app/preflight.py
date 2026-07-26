@@ -27,6 +27,9 @@ TECHNICAL_CHECK_NAMES = frozenset({"microphone", "audio_output", "backend", "sar
 POLICY_CHECK_NAMES = frozenset({"eligibility", "contact_cap", "active_session"})
 MICROPHONE_HEADER = "X-Vachan-Microphone"
 AUDIO_OUTPUT_HEADER = "X-Vachan-Audio-Output"
+CONTACT_CAP_POLICY_DETAIL = (
+    "contact cap reached: 3/3 this week — mock policy. Priya cannot override this policy block."
+)
 
 router = APIRouter(tags=["calls"])
 
@@ -90,7 +93,7 @@ def evaluate_preflight(inputs: PreflightInputs) -> PreflightResponse:
             "contact_cap",
             inputs.contact_cap_remaining > 0,
             "The mock case has contact capacity remaining.",
-            "Contact cap is exhausted. Priya cannot override this policy block.",
+            CONTACT_CAP_POLICY_DETAIL,
         ),
         _check(
             "active_session",

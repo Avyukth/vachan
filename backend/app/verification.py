@@ -7,8 +7,10 @@ exceptions, representations, or evidence rows.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -28,6 +30,8 @@ DEMO_VERIFICATION_LABEL: Final = "DEMO VERIFICATION — NOT PRODUCTION AUTHENTIC
 # explicit makes prompt-isolation tests inspect an application contract rather
 # than infer safety from a mocked network call.
 VERIFICATION_MODEL_PAYLOADS: Final[tuple[()]] = ()
+COMPLETE_VERIFICATION_INPUT_MARKER: Final = "[complete verification response withheld]"
+INCOMPLETE_VERIFICATION_INPUT_MARKER: Final = "[verification input withheld]"
 
 _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _NUMERIC_DATE_PATTERN = re.compile(r"(?<!\d)(?P<day>[0-3]?\d)\s*[/.\-]\s*(?P<month>[01]?\d)(?!\d)")
@@ -128,6 +132,56 @@ class VerificationAttemptEvidence:
             "passed": self.passed,
         }
 
+    def as_redacted_reason(self) -> str:
+        """Serialize the approved shape for the append-only event row."""
+
+        return json.dumps(
+            self.as_log_record(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_redacted_reason(cls, value: str) -> VerificationAttemptEvidence:
+        """Parse one durable event payload without accepting extra fields."""
+
+        try:
+            record = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError("verification evidence is not valid JSON") from error
+        if not isinstance(record, dict) or set(record) != {
+            "event",
+            "attempt",
+            "fields",
+            "passed",
+        }:
+            raise ValueError("verification evidence has an unexpected top-level shape")
+        if record["event"] != "VERIFICATION_ATTEMPT":
+            raise ValueError("verification evidence has an unexpected event type")
+        attempt = record["attempt"]
+        passed = record["passed"]
+        fields = record["fields"]
+        if isinstance(attempt, bool) or not isinstance(attempt, int):
+            raise ValueError("verification evidence attempt must be an integer")
+        if not isinstance(passed, bool) or not isinstance(fields, list):
+            raise ValueError("verification evidence result has an invalid type")
+
+        checks: list[FieldCheck] = []
+        for field in fields:
+            if not isinstance(field, dict) or set(field) != {"field", "passed"}:
+                raise ValueError("verification field evidence has an unexpected shape")
+            field_name = field["field"]
+            field_passed = field["passed"]
+            if not isinstance(field_name, str) or not isinstance(field_passed, bool):
+                raise ValueError("verification field evidence has an invalid type")
+            try:
+                verification_field = VerificationField(field_name)
+            except ValueError as error:
+                raise ValueError("verification field evidence has an unknown field") from error
+            checks.append(FieldCheck(field=verification_field, passed=field_passed))
+        return cls(attempt=attempt, checks=tuple(checks), passed=passed)
+
 
 @dataclass(frozen=True, slots=True)
 class VerificationSession:
@@ -166,6 +220,37 @@ class VerificationResult:
             raise ValueError("only terminal verification failure selects the fixed close template")
         if self.model_payloads:
             raise ValueError("verification must not construct model payloads")
+
+
+def reconstruct_verification_session(
+    attempts: Iterable[VerificationAttemptEvidence],
+) -> VerificationSession:
+    """Rebuild attempt state from durable, redacted evidence only.
+
+    Restart recovery must never infer an attempt from a tool decision or a
+    caller value. Only a contiguous sequence of persisted attempt records may
+    consume the two-attempt budget.
+    """
+
+    evidence = tuple(attempts)
+    if len(evidence) > MAX_VERIFICATION_ATTEMPTS:
+        raise ValueError("verification evidence exceeds the configured attempt limit")
+    expected_numbers = tuple(range(1, len(evidence) + 1))
+    if tuple(item.attempt for item in evidence) != expected_numbers:
+        raise ValueError("verification evidence attempts must be contiguous and ordered")
+    if any(item.passed for item in evidence[:-1]):
+        raise ValueError("verification evidence cannot continue after a successful attempt")
+    if not evidence:
+        return VerificationSession()
+
+    latest = evidence[-1]
+    if latest.passed:
+        status = VerificationStatus.CONFIRMED
+    elif latest.attempt == MAX_VERIFICATION_ATTEMPTS:
+        status = VerificationStatus.FAILED
+    else:
+        status = VerificationStatus.PENDING
+    return VerificationSession(attempts=latest.attempt, status=status)
 
 
 def _normalized_tokens(value: str) -> tuple[str, ...]:
@@ -371,6 +456,16 @@ def _normalized_expected_reference(expected: ExpectedVerification) -> str:
     normalized = normalize_reference_last4(expected.reference_last4)
     assert normalized is not None
     return normalized
+
+
+def verification_input_marker(submission: VerificationSubmission) -> str:
+    """Return a value-free model/history marker for one caller submission."""
+
+    complete = (
+        normalize_birth_day_month(submission.birth_day_month) is not None
+        and normalize_reference_last4(submission.reference_last4) is not None
+    )
+    return COMPLETE_VERIFICATION_INPUT_MARKER if complete else INCOMPLETE_VERIFICATION_INPUT_MARKER
 
 
 def submit_verification(

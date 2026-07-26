@@ -20,6 +20,7 @@ from app.seeds import RAKESH_CASE
 from app.states import IdentityState
 from app.templates import TemplateId, is_bank_member, render_template
 from app.tools import ToolPermissionDenied
+from app.verification import INCOMPLETE_VERIFICATION_INPUT_MARKER
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
 
@@ -165,7 +166,7 @@ def test_third_party_pressure_stays_content_free_then_borrower_return_starts_fre
         assert controller.verification.attempts == 0
         assert controller.third_party.response_count == 0
         assert tuple(message.content for message in controller.history) == (
-            "Rakesh bol raha hoon",
+            INCOMPLETE_VERIFICATION_INPUT_MARKER,
             render_template(TemplateId.VERIFY_REQUEST),
         )
         with pytest.raises(ToolPermissionDenied):

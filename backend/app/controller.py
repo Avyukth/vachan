@@ -49,9 +49,12 @@ from app.tools import ToolName
 from app.verification import (
     ExpectedVerification,
     VerificationSession,
+    VerificationStatus,
     VerificationSubmission,
     submit_verification,
+    verification_input_marker,
 )
+from app.verification_evidence import VerificationEvidenceRepository
 
 JsonObject = dict[str, Any]
 Clock = Callable[[], datetime]
@@ -149,7 +152,8 @@ class DialogueController:
         self.clock = clock
         self.transport = transport
         self.disposition: Disposition | None = None
-        self.verification = VerificationSession()
+        self._verification_evidence = VerificationEvidenceRepository(ledger)
+        self.verification = self._verification_evidence.reconstruct_session(call_id)
         self.third_party = ThirdPartySession()
         self.callback_payloads: list[dict[str, str]] = []
         self.history: tuple[PromptMessage, ...] = ()
@@ -212,6 +216,7 @@ class DialogueController:
         if row["disposition"] is not None:
             raise ControllerClosedError("terminal call cannot be activated")
         await self._activate(reason_prefix="voice")
+        await self._restore_verification_identity()
 
     async def _activate(self, *, reason_prefix: str) -> None:
         for target, reason in (
@@ -222,6 +227,21 @@ class DialogueController:
         ):
             await self._coordinator.transition(target, reason_code=reason)
         self._started = True
+
+    async def _restore_verification_identity(self) -> None:
+        """Rebuild authorization state from durable attempts for this same call."""
+
+        if self.verification.attempts == 0:
+            return
+        await self._coordinator.transition(
+            IdentityState.VERIFYING,
+            reason_code="verification_attempts_restored",
+        )
+        if self.verification.status is VerificationStatus.CONFIRMED:
+            await self._coordinator.transition(
+                IdentityState.CONFIRMED,
+                reason_code="verification_confirmation_restored",
+            )
 
     async def _record_promise_event(self, event: PromiseEvent) -> None:
         snapshot = self.snapshot
@@ -404,19 +424,14 @@ class DialogueController:
                 ExpectedVerification.from_case(self.case),
             ),
         )
-        self.verification = result.session
         snapshot = self.snapshot
-        await self.ledger.append_event(
+        await self._verification_evidence.append_attempt(
             call_id=self.call_id,
             ts=self.clock(),
-            event_type="VERIFICATION_ATTEMPT",
-            state_before=snapshot,
-            state_after=snapshot,
-            redacted_reason=(
-                f"verification_attempt_{result.evidence.attempt}:"
-                f"{'pass' if result.evidence.passed else 'fail'}"
-            ),
+            state=snapshot,
+            evidence=result.evidence,
         )
+        self.verification = result.session
         if result.identity_state is IdentityState.CONFIRMED:
             await self._coordinator.transition(
                 IdentityState.CONFIRMED,
@@ -675,17 +690,25 @@ class DialogueController:
         if not transcript.strip():
             raise ValueError("finalized transcript must not be empty")
         await self._begin_fresh_borrower_return(transcript)
+        model_utterance = transcript
+        if self.snapshot.identity is IdentityState.VERIFYING:
+            model_utterance = verification_input_marker(
+                VerificationSubmission(
+                    birth_day_month=transcript,
+                    reference_last4=transcript,
+                )
+            )
         context = build_llm_context(
             call_state=self.snapshot.call,
             identity_state=self.snapshot.identity,
             promise_state=self.snapshot.promise,
             case=self.case,
-            current_utterance=transcript,
+            current_utterance=model_utterance,
             history=self.history,
         )
         chat = await self.sarvam.chat_completion(context.as_api_messages())
         payload = _action_payload(chat)
-        self.history = (*self.history, PromptMessage(PromptRole.USER, transcript))
+        self.history = (*self.history, PromptMessage(PromptRole.USER, model_utterance))
 
         if self.snapshot.identity is IdentityState.CONFIRMED:
             draft, disposition = await self._handle_confirmed(transcript, payload)

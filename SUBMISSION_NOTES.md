@@ -87,11 +87,6 @@ limitation only after its named bead is closed with an exact record of what was 
   appended UI events as a live ledger stream.
 - `sarvam-bb8.1`: the atomic promise-evidence applier landed in `0f13db2`, while full acceptance
   and closeout remain pending. Do not claim every promise transition is proven atomic yet.
-- `sarvam-bfo.1`: terminal disposition compare-and-set is atomic, but a promise can be durably
-  inserted with `PROMISE_COMMITTED` before confirmation speech. A concurrent speech failure can
-  then persist `ENDED_TECHNICAL` while retaining that promise row. Do not claim promise commit and
-  technical terminalization are atomically coupled; the exact barrier race is reproduced and
-  tracked. Existing read-back-before-commit failure paths remain fail-closed.
 - `sarvam-ls0.1`: the permission decision is recorded before promise writes, but the asynchronous
   promise mutation is not yet owned by the same authoritative gated execution boundary.
 - `sarvam-a1m`: malformed promise amount/date facts still need stricter fail-closed validation.

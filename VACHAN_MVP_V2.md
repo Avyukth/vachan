@@ -10,7 +10,7 @@ Where they conflict, this file wins.
 |---|---|---|
 | §1.2 MediaRecorder≠PCM16: audio transport unspecified | **ADOPT — best catch in the doc** | Audio spike with hard H0:45 streaming-vs-REST decision |
 | §1.5 Regex guard too brittle as primary boundary | **ADOPT** | 4 layers: context isolation → tool isolation → templates → guard |
-| §1.10 Demo arc was two calls in disguise | **ADOPT** | One continuous call: verify → commit → handover → refuse |
+| §1.10 Demo arc was two calls in disguise | **ADOPT** | One continuous call: verify → read-back → handover/refuse → fresh verify → correct/read-back/confirm |
 | §1.4 Verification unspecified | **ADOPT** | 2 seeded values, never spoken, 2 attempts, handover invalidates |
 | §1.6/1.7/1.8 Split state machines; candidate→committed events; ISO dates | **ADOPT** | Call / identity / promise enums; event-sourced promise; Asia/Kolkata |
 | §1.9 No exception paths | **ADOPT (trimmed)** | 5 dispositions; takeover order; preflight |
@@ -64,8 +64,8 @@ Where they conflict, this file wins.
   inputs labeled as such; TTS playback skippable); timestamped output regenerated immediately
   before the demo; honest failures shown. Minimum matrix: correct verify / one-wrong-then-right /
   two-wrong / spouse asks 3× / commit ₹1,500 / correction ₹1,050 / no-at-read-back / handover
-  after confirm / LLM drafts balance while unverified / duplicate confirm / STT drop / takeover /
-  contact-cap.
+  before affirmation followed by fresh verification / LLM drafts balance while unverified /
+  duplicate confirm / STT drop / takeover / contact-cap.
 - **CE3 Impact framing:** kept-promise rate stated as the proposed pilot metric — no invented
   KPI values from seeded calls.
 
@@ -82,9 +82,10 @@ analytics (Stitch designs carry it), telephony, hash chains, biometrics.
 | 0:10 | "Scam hai kya?" → fixed anti-scam template | No debt words pre-verification |
 | 0:25 | Rakesh gives 2 values → code flips to CONFIRMED | Tool unlock event on screen |
 | 0:40 | Offers ₹1,500 "Friday" → read-back: digits + words + absolute date | Candidate + read-back events |
-| 1:05 | Explicit "haan" → single committed promise | Idempotent commit row |
-| 1:15 | Hands phone to Sunita; she asks balance | Demotion + relock + content-free refusal |
-| 1:30 | Priya opens Evidence | Ordered timeline explains every decision |
+| 0:52 | Before affirming, hands phone to Sunita; she asks balance | Same-turn demotion + relock + content-free refusal |
+| 1:03 | Rakesh takes the phone back and supplies 2 values again | Fresh verification epoch; no confirmed-context carryover |
+| 1:18 | Corrects to Saturday → new read-back; explicit "haan" ends the call | Revised candidate + one terminal idempotent commit |
+| 1:32 | Priya opens Evidence | Ordered timeline explains every decision; no post-terminal turn |
 | +20s | Second case: contact cap exhausted → Start DISABLED at preflight | Refusal before any session exists; then show fresh runner artifact |
 
 Framing line: *"The voice model handles language. Deterministic code controls identity, private

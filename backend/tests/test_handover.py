@@ -50,7 +50,7 @@ def engine_with_ledger() -> tuple[
     return connection, engine, relocks
 
 
-async def advance_to_committed(engine: StateMachineCoordinator) -> None:
+async def advance_to_read_back(engine: StateMachineCoordinator) -> None:
     for target in (
         CallState.PREFLIGHT,
         CallState.READY,
@@ -60,8 +60,6 @@ async def advance_to_committed(engine: StateMachineCoordinator) -> None:
         IdentityState.CONFIRMED,
         PromiseState.CANDIDATE,
         PromiseState.READ_BACK,
-        PromiseState.CONFIRMED,
-        PromiseState.COMMITTED,
     ):
         await engine.transition(target, reason_code=f"test_{target.value.lower()}")
 
@@ -117,17 +115,17 @@ def test_runtime_uncertainty_signals_fail_closed() -> None:
     assert detect_handover("ordinary continuation").detected is False
 
 
-def test_case_8_handover_after_commit_relocks_and_removes_all_account_carryover() -> None:
+def test_case_8_handover_before_affirmation_relocks_and_removes_account_carryover() -> None:
     connection, engine, relocks = engine_with_ledger()
     boundary = HandoverBoundary(state=engine, case=RAKESH_CASE)
-    asyncio.run(advance_to_committed(engine))
+    asyncio.run(advance_to_read_back(engine))
     assert account_tool_allowed(engine) is True
 
     try:
         outcome = asyncio.run(boundary.handle_turn("lo baat karo"))
         assert outcome is not None
         assert engine.snapshot.identity is IdentityState.UNVERIFIED
-        assert engine.snapshot.promise is PromiseState.COMMITTED
+        assert engine.snapshot.promise is PromiseState.READ_BACK
         assert account_tool_allowed(engine) is False
         assert relocks == ["UNVERIFIED"]
         assert outcome.response_template is TemplateId.ASK_FOR_BORROWER
@@ -162,7 +160,7 @@ def test_case_8_handover_after_commit_relocks_and_removes_all_account_carryover(
 def test_identified_spouse_enters_third_party_with_only_content_free_speech() -> None:
     connection, engine, _relocks = engine_with_ledger()
     boundary = HandoverBoundary(state=engine, case=RAKESH_CASE)
-    asyncio.run(advance_to_committed(engine))
+    asyncio.run(advance_to_read_back(engine))
 
     try:
         outcome = asyncio.run(boundary.handle_turn("main unki wife hoon"))
@@ -181,7 +179,7 @@ def test_identified_spouse_enters_third_party_with_only_content_free_speech() ->
 def test_borrower_return_starts_a_completely_fresh_verification_session() -> None:
     connection, engine, _relocks = engine_with_ledger()
     boundary = HandoverBoundary(state=engine, case=RAKESH_CASE)
-    asyncio.run(advance_to_committed(engine))
+    asyncio.run(advance_to_read_back(engine))
 
     try:
         asyncio.run(boundary.handle_turn("main unki wife hoon"))

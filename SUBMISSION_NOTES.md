@@ -84,9 +84,11 @@ final artifact:
 These are conservative claims for a concurrently changing working tree. Remove or narrow a
 limitation only after its named bead is closed with an exact record of what was tested.
 
-- `sarvam-1bu`: the published “commit, then hand over the same call” demo sequence conflicts with
-  terminal-call semantics. The final demo must use the revised, tested sequence selected by this
-  bead; Vachan must never process another turn after a terminal disposition.
+- `sarvam-1bu`: the scripted controller proof now uses the terminal-safe sequence: read-back,
+  handover/refusal before affirmation, fresh two-value verification when Rakesh returns, a revised
+  read-back, and explicit “haan” as the sole terminal `PROMISE_CONFIRMED`. Post-terminal turns are
+  rejected before STT. The required three physical rehearsals remain a separate honest gate; do
+  not present the scripted proof as human/live-call evidence.
 
 If any item above remains open at feature freeze, keep it in the submitted limitations. A
 disclosed limitation is preferable to a claim that the running build cannot prove.

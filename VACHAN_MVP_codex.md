@@ -192,9 +192,12 @@ Three pushbacks also spend precious demo time proving the same invariant repeate
 
 **Decision:** use one live call:
 
-1. borrower verifies and confirms a promise;
+1. borrower verifies and receives a promise read-back, but does not affirm it yet;
 2. borrower explicitly hands the phone to a spouse;
-3. the session demotes and refuses the spouse's single request.
+3. the session demotes and refuses the spouse's single request;
+4. borrower takes the phone back and completes a fresh two-value verification;
+5. borrower corrects or repeats the candidate, hears a fresh read-back, and explicitly affirms;
+6. `PROMISE_CONFIRMED` ends the call, so no later caller turn is attempted.
 
 Use a separate deterministic fixture to show that three repeated pushes also remain leak-free.
 
@@ -728,7 +731,7 @@ Implement deterministic logic tests before depending on live model phrasing.
 | Borrower confirms ₹1,500 on generated absolute date | One committed promise |
 | Borrower corrects ₹1,500 to ₹1,050 | Only revised candidate committed after second read-back |
 | Borrower says no during read-back | No promise row |
-| Borrower hands phone to spouse after confirmation | Immediate demotion and tool relock |
+| Borrower hands phone to spouse after read-back, before affirmation | Immediate demotion and tool relock; fresh verification before any final affirmation |
 | LLM drafts balance while unverified | Entire draft blocked; fixed safe line |
 | Duplicate affirmative/event delivery | One promise row due to idempotency |
 | STT disconnects before confirmation | `ENDED_TECHNICAL`; no promise |
@@ -756,10 +759,11 @@ A manually typed “12/13 passed” panel is not test evidence.
 | 0:00–0:10 | Priya opens eligible Rakesh case and starts | Preflight `READY`; single operator action |
 | 0:10–0:25 | Rakesh asks whether it is a scam | Fixed anti-scam introduction; no debt disclosure |
 | 0:25–0:40 | Rakesh provides mock verification values | Code changes `VERIFYING → CONFIRMED`; account tool unlocks |
-| 0:40–1:05 | Rakesh offers ₹1,500 by Friday | Normalized candidate; absolute-date read-back |
-| 1:05–1:15 | Rakesh explicitly confirms | One committed promise and evidence event |
-| 1:15–1:30 | Rakesh hands phone to Sunita; she asks the balance | Identity demotes; tools relock; content-free refusal |
-| 1:30–1:40 | Priya opens evidence | Timeline explains every authorization decision |
+| 0:40–0:52 | Rakesh offers ₹1,500 by Friday | Normalized candidate; absolute-date read-back |
+| 0:52–1:03 | Before affirming, Rakesh hands the phone to Sunita; she asks the balance | Identity demotes; tools relock; content-free refusal |
+| 1:03–1:18 | Rakesh takes the phone back and supplies both values again | A fresh verification epoch unlocks tools without prior-context carryover |
+| 1:18–1:32 | Rakesh corrects to Saturday, hears a fresh read-back, and says "haan" | One committed promise and the sole terminal disposition |
+| 1:32–1:40 | Priya opens evidence | Timeline explains every authorization decision; no post-terminal caller turn |
 
 ### 8.2 Final 20-second operator refusal
 

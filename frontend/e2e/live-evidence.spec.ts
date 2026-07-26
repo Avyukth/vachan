@@ -5,6 +5,57 @@ const CALL_ID = 'call-browser-e2e';
 // Bare `bun test` recursively discovers `*.spec.ts`; only register these
 // cases when the file is loaded by Playwright's Node-based runner.
 if (!('Bun' in globalThis)) {
+	test('mobile setup defaults to Rakesh with touch-safe controls and no overflow', async ({
+		page
+	}) => {
+		await page.setViewportSize({ width: 390, height: 844 });
+		await page.route('**/api/cases', (route) =>
+			route.fulfill({
+				contentType: 'application/json',
+				body: JSON.stringify({
+					api_version: 'v0',
+					cases: [
+						{
+							api_version: 'v0',
+							case_id: 'case-capped-001',
+							borrower_display_name: 'Meera Kulkarni',
+							eligible: true,
+							contact_cap_remaining: 10,
+							mock_data: true
+						},
+						{
+							api_version: 'v0',
+							case_id: 'case-rakesh-001',
+							borrower_display_name: 'Rakesh Yadav',
+							eligible: true,
+							contact_cap_remaining: 40,
+							mock_data: true
+						}
+					]
+				})
+			})
+		);
+		await page.goto('/', { waitUntil: 'networkidle' });
+
+		const casePicker = page.getByRole('combobox', { name: 'Mock case' });
+		await expect(casePicker).toHaveValue('case-rakesh-001');
+		expect((await casePicker.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+
+		await page.getByRole('button', { name: 'Reset demo data' }).click();
+		const resetButtons = page.locator('.reset-confirmation button');
+		await expect(resetButtons).toHaveCount(2);
+		const first = await resetButtons.nth(0).boundingBox();
+		const second = await resetButtons.nth(1).boundingBox();
+		expect(first?.width).toBeGreaterThanOrEqual(44);
+		expect(second?.width).toBeGreaterThanOrEqual(44);
+		expect(first?.y).toBeLessThan(second?.y ?? 0);
+		expect(
+			await page.evaluate(
+				() => document.documentElement.scrollWidth === window.innerWidth
+			)
+		).toBe(true);
+	});
+
 	test('real operator controls render persisted live evidence and reconnect without duplicates', async ({
 		page
 	}) => {

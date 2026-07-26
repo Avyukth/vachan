@@ -10,6 +10,8 @@ declare const Bun: {
 const operatorConsoleSource = await Bun.file(
 	new URL('./components/OperatorConsole.svelte', import.meta.url)
 ).text();
+const operatorPageSource = await Bun.file(new URL('../routes/+page.svelte', import.meta.url)).text();
+const appCssSource = await Bun.file(new URL('../app.css', import.meta.url)).text();
 
 function event(
 	seq: number,
@@ -166,5 +168,26 @@ describe('ledger-derived operator view', () => {
 				"class:promise={view.promiseState !== '—' && view.promiseState !== 'NONE'}"
 			)
 		).toBe(false);
+	});
+
+	test('defaults to the stable happy-path case instead of API ordering', () => {
+		expect(operatorPageSource).toContain("const HAPPY_PATH_CASE_ID = 'case-rakesh-001'");
+		expect(operatorPageSource).toContain(
+			'cases.find((demoCase) => demoCase.case_id === HAPPY_PATH_CASE_ID)?.case_id'
+		);
+	});
+
+	test('keeps selects and phone reset controls touch-safe', () => {
+		expect(/select\s*\{[^}]*min-height:\s*44px;/s.test(appCssSource)).toBe(true);
+		expect(
+			/@media \(max-width: 48rem\)[\s\S]*?\.reset-confirmation > div\s*\{[^}]*grid-template-columns:\s*1fr;/s.test(
+				appCssSource
+			)
+		).toBe(true);
+		expect(
+			/@media \(max-width: 48rem\)[\s\S]*?\.intro-panel h2\s*\{[^}]*max-width:\s*18ch;/s.test(
+				appCssSource
+			)
+		).toBe(true);
 	});
 });

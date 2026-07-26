@@ -36,6 +36,7 @@
 
 	const RESET_CONFIRMATION = 'RESET DEMO / MOCK DATA';
 	const ACTIVE_CALL_STORAGE_KEY = 'vachan.activeCallId';
+	const HAPPY_PATH_CASE_ID = 'case-rakesh-001';
 
 	let microphoneState = $state<MicrophoneState>('idle');
 	let microphoneDetail = $state('Permission has not been requested on this browser.');
@@ -123,7 +124,10 @@
 			if (!response.ok) throw new Error(`Case list failed with HTTP ${response.status}.`);
 			const body = (await response.json()) as { cases: CaseSummary[] };
 			cases = body.cases;
-			selectedCaseId = cases[0]?.case_id ?? '';
+			selectedCaseId =
+				cases.find((demoCase) => demoCase.case_id === HAPPY_PATH_CASE_ID)?.case_id ??
+				cases[0]?.case_id ??
+				'';
 			resetPreflight(
 				selectedCaseId
 					? 'Complete both browser audio checks, then run policy preflight.'

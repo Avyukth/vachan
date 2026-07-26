@@ -37,6 +37,15 @@ select {
 	font: inherit;
 }
 
+select {
+	min-height: 44px;
+	border: 1px solid var(--color-seam);
+	border-radius: 0;
+	padding: 0 0.75rem;
+	background: var(--color-panel);
+	color: var(--color-text);
+}
+
 button {
 	min-height: 44px;
 	border: 1px solid transparent;
@@ -490,7 +499,11 @@ footer code {
 	}
 
 	.intro-panel h2 {
-		max-width: 11ch;
+		max-width: 18ch;
+	}
+
+	.reset-confirmation > div {
+		grid-template-columns: 1fr;
 	}
 
 	footer {

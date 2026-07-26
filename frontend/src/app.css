@@ -426,6 +426,12 @@ footer code {
 	color: var(--color-text);
 }
 
+.replay-controls button {
+	border-color: var(--color-seam);
+	background: transparent;
+	color: var(--color-text);
+}
+
 .replay-status-line {
 	margin-top: 1.25rem;
 	border-block: 1px solid color-mix(in srgb, var(--color-demoted), transparent 55%);

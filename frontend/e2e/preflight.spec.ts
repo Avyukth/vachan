@@ -116,5 +116,18 @@ if (!('Bun' in globalThis)) {
 		await expect(start).toBeDisabled();
 		await expect(start).toHaveAttribute('title', /Priya cannot override/);
 		await expect(page.locator('.setup-actions .start-button')).toHaveCount(1);
+		const amberButtons = await page.locator('button').evaluateAll((buttons) => {
+			const probe = document.createElement('div');
+			probe.style.background = getComputedStyle(document.documentElement)
+				.getPropertyValue('--color-accent')
+				.trim();
+			document.body.append(probe);
+			const accent = getComputedStyle(probe).backgroundColor;
+			probe.remove();
+			return buttons
+				.filter((button) => getComputedStyle(button).backgroundColor === accent)
+				.map((button) => button.textContent?.trim() ?? '');
+		});
+		expect(amberButtons).toEqual(['Start mock call']);
 	});
 }

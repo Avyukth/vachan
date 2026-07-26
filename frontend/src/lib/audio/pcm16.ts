@@ -16,7 +16,8 @@ interface CaptureResources {
 	socket: WebSocket;
 }
 
-export type AudioSpikeEventHandler = (message: unknown) => void;
+export type PcmCaptureEventHandler = (message: unknown) => void;
+export type AudioSpikeEventHandler = PcmCaptureEventHandler;
 
 function websocketUrl(path: string): string {
 	const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -43,7 +44,8 @@ async function releaseCapture(resources: CaptureResources): Promise<void> {
 }
 
 export async function startPcm16Capture(
-	onEvent: AudioSpikeEventHandler
+	onEvent: PcmCaptureEventHandler,
+	websocketPath = SPIKE_WEBSOCKET_PATH
 ): Promise<PcmCaptureSession> {
 	if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) {
 		throw new Error('This browser does not support AudioWorklet microphone capture');
@@ -73,7 +75,7 @@ export async function startPcm16Capture(
 		silentGain.gain.value = 0;
 		source.connect(worklet).connect(silentGain).connect(context.destination);
 
-		const socket = new WebSocket(websocketUrl(SPIKE_WEBSOCKET_PATH));
+		const socket = new WebSocket(websocketUrl(websocketPath));
 		socket.binaryType = 'arraybuffer';
 		socket.addEventListener('message', (event) => {
 			try {
@@ -120,7 +122,7 @@ export async function startPcm16Capture(
 					inputFinished = true;
 					await finishCapture();
 				}
-				socket.close(1000, 'operator closed audio spike');
+				socket.close(1000, 'audio capture closed');
 			}
 		};
 	} catch (error) {
@@ -128,4 +130,13 @@ export async function startPcm16Capture(
 		await context.close();
 		throw error;
 	}
+}
+
+export function startCallPcm16Capture(
+	callId: string,
+	onEvent: PcmCaptureEventHandler
+): Promise<PcmCaptureSession> {
+	if (!callId.trim()) throw new Error('Call ID is required for microphone capture');
+	const path = `/ws/call/${encodeURIComponent(callId)}`;
+	return startPcm16Capture(onEvent, path);
 }

@@ -70,3 +70,6 @@ Thumbs.db
 *.swp
 *~
 .idea/
+
+# Beads compliance audit dir (managed by /beads-compliance-and-completion-verification skill)
+/beads_compliance_audit/

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "stt": "backend/artifacts/sarvam_stt_smoke_response.json",
+    "tts": "backend/artifacts/sarvam_tts_smoke_response.json",
+    "captured_at": "2026-07-26"
+  },
+  "speech_to_text": {
+    "request": {
+      "content_type": "multipart/form-data",
+      "fields": {
+        "file": "binary audio/wav",
+        "model": "saaras:v3",
+        "mode": "transcribe",
+        "language_code": "hi-IN"
+      }
+    },
+    "response": {
+      "required_keys": [
+        "request_id",
+        "transcript",
+        "language_code"
+      ],
+      "value_types": {
+        "request_id": "string",
+        "transcript": "string",
+        "language_code": "string"
+      }
+    }
+  },
+  "text_to_speech": {
+    "request": {
+      "content_type": "application/json",
+      "fields": {
+        "text": "string",
+        "target_language_code": "hi-IN",
+        "model": "bulbul:v3",
+        "speaker": "priya",
+        "speech_sample_rate": 24000
+      }
+    },
+    "response": {
+      "required_keys": [
+        "request_id",
+        "audios"
+      ],
+      "value_types": {
+        "request_id": "string",
+        "audios": "array[string]"
+      }
+    }
+  }
+}

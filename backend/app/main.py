@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.audio_spike import router as audio_spike_router
 from app.replay import router as replay_router
 from app.sarvam_client import load_sarvam_api_key
 
@@ -24,6 +25,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(audio_spike_router)
 app.include_router(replay_router)
 
 

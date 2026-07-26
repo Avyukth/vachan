@@ -72,10 +72,9 @@ final artifact:
   revalidated. `sarvam-7m1` owns that deferred verification audit. Any coverage still verified
   only by a focused file at submission time must be labeled as such rather than implied to have
   passed the complete suite.
-- Until `sarvam-ee1.1` is closed with its production-boundary regressions passing, matrix rows
-  11–13 overstate their boundary coverage: they simulate the STT failure, takeover, and capped-case
-  outcomes below the actual public transport/route seams. If that bead remains open at freeze, the
-  submitted artifact caption must say this verbatim.
+- Cut `context.py` and `memory.py` experiments are not production-wired and are not counted as
+  shipped coverage. Their isolated or intentionally skipped tests do not prove the active
+  `context_isolation.py` boundary.
 
 ## Current implementation limitations
 
@@ -85,13 +84,22 @@ limitation only after its named bead is closed with an exact record of what was 
 - `sarvam-jg9`: the operator console's replay is explicitly labeled, but the live SQLite-backed
   `/api/evidence/{call_id}` journey is not yet mounted. Do not describe replay data or locally
   appended UI events as a live ledger stream.
-- `sarvam-vmo.1`: storage hardening landed in `5e2daff` with focused DB/reset/promise evidence,
-  but its final shared-verification closeout is still pending. Until closure, describe append-only
-  enforcement as focused-test evidence rather than a complete-suite result.
+- `sarvam-v2v`: a backend restart can leave a durable active call without its in-memory lifecycle
+  registry, blocking preflight, reset, end, and takeover until that orphan is reconciled as
+  `ENDED_TECHNICAL`. Do not present restart recovery as complete until this P0 bead closes.
+- `sarvam-vmo.1`: evidence rows reject ordinary update/delete operations and sanctioned reset is
+  scoped and audited in normal operation, but trusted same-process code holding the raw SQLite
+  connection can mutate the ledger object's private reset flag. No public UI or API exposes that
+  attribute or raw SQL, but the reset capability is not unforgeable against a malicious in-process
+  caller. A 22-test closure/narrow-connection experiment was deliberately not shipped after
+  feature freeze because it changed the shared persistence boundary.
 - `sarvam-bb8.1`: the atomic promise-evidence applier landed in `0f13db2`, while full acceptance
   and closeout remain pending. Do not claim every promise transition is proven atomic yet.
-- `sarvam-bfo.1`: not every terminal disposition path is yet serialized through one atomic
-  event-plus-call-row boundary.
+- `sarvam-bfo.1`: terminal disposition compare-and-set is atomic, but a promise can be durably
+  inserted with `PROMISE_COMMITTED` before confirmation speech. A concurrent speech failure can
+  then persist `ENDED_TECHNICAL` while retaining that promise row. Do not claim promise commit and
+  technical terminalization are atomically coupled; the exact barrier race is reproduced and
+  tracked. Existing read-back-before-commit failure paths remain fail-closed.
 - `sarvam-ls0.1`: the permission decision is recorded before promise writes, but the asynchronous
   promise mutation is not yet owned by the same authoritative gated execution boundary.
 - `sarvam-a1m`: malformed promise amount/date facts still need stricter fail-closed validation.
@@ -135,7 +143,6 @@ Do not submit until each item has an owner and an explicit result:
       still-unverified coverage claim is explicitly disclosed.
 - [ ] Every open fix-or-disclose bead above is either closed with passing tests or retained as a
       limitation.
-- [ ] `sarvam-ee1.1` is fixed, or the exact matrix-boundary caveat remains in the artifact caption.
 - [ ] `sarvam-1bu` has selected one executable demo sequence and all post-terminal wording is
       removed from the script and slides.
 - [ ] Replay screens remain visibly labeled `REPLAY`; no replay event is described as live.

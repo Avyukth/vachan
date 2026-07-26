@@ -193,6 +193,7 @@ def test_reset_reseeds_only_governed_rows_and_invalidates_ready_state() -> None:
     assert {row["id"] for row in rows} == {
         "case-rakesh-001",
         "case-capped-001",
+        "case-capped-002",
         "non-demo-case",
     }
     demo_rows = [row for row in rows if row["id"] != "non-demo-case"]

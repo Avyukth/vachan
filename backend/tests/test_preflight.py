@@ -83,7 +83,7 @@ def test_contact_cap_is_a_non_overridable_policy_block_without_call_row() -> Non
         FROM cases
         WHERE id = ?
         """,
-        ("case-capped-001",),
+        ("case-capped-002",),
     ).fetchone()
     response = evaluate_preflight(
         ready_inputs(
@@ -175,7 +175,7 @@ def test_capped_case_endpoint_blocks_without_creating_a_call(
 ) -> None:
     response = preflight_client.post(
         "/api/preflight",
-        json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},
+        json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-002"},
         headers=preflight_headers(),
     )
 
@@ -191,7 +191,7 @@ def test_capped_case_endpoint_blocks_without_creating_a_call(
     }
     denied_start = preflight_client.post(
         "/api/call/start",
-        json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},
+        json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-002"},
     )
     assert denied_start.status_code == 409
     ledger = preflight_client.app.state.evidence_ledger
@@ -291,7 +291,7 @@ def test_cases_endpoint_omits_private_account_and_verification_fields(
 
     assert response.status_code == 200
     body = response.json()
-    assert len(body["cases"]) == 2
+    assert len(body["cases"]) == 3
     serialized = response.text.casefold()
     assert "lender" not in serialized
     assert "outstanding" not in serialized

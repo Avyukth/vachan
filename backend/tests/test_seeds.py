@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from app.seeds import (
+    CAP_EXHAUSTED_CASE,
     CONTACT_CAPPED_CASE,
     DEMO_CASES,
     DEMO_TIME_ANCHOR,
@@ -14,11 +15,12 @@ from app.seeds import (
 )
 
 
-def test_exactly_two_stable_mock_cases_are_seeded() -> None:
-    assert DEMO_CASES == (RAKESH_CASE, CONTACT_CAPPED_CASE)
+def test_exactly_three_stable_mock_cases_are_seeded() -> None:
+    assert DEMO_CASES == (RAKESH_CASE, CONTACT_CAPPED_CASE, CAP_EXHAUSTED_CASE)
     assert [case.case_id for case in DEMO_CASES] == [
         "case-rakesh-001",
         "case-capped-001",
+        "case-capped-002",
     ]
     assert all(case.mock_data_label == MOCK_DATA_LABEL for case in DEMO_CASES)
 
@@ -28,8 +30,12 @@ def test_rakesh_is_eligible_and_control_case_is_blocked_by_contact_cap() -> None
     assert RAKESH_CASE.eligible
     assert RAKESH_CASE.contact_cap_remaining > 0
 
+    # Meera is a callable rehearsal case; the refusal fixture is Farida (cap 0).
     assert CONTACT_CAPPED_CASE.eligible
-    assert CONTACT_CAPPED_CASE.contact_cap_remaining == 0
+    assert CONTACT_CAPPED_CASE.contact_cap_remaining > 0
+
+    assert CAP_EXHAUSTED_CASE.eligible
+    assert CAP_EXHAUSTED_CASE.contact_cap_remaining == 0
 
 
 def test_public_summaries_exclude_verification_and_account_values() -> None:
@@ -89,5 +95,9 @@ def test_reset_reseeds_exactly_the_governed_rows_and_anchor() -> None:
 
     seeded_ids = reset_and_reseed_demo_cases(repository)
 
-    assert seeded_ids == ("case-rakesh-001", "case-capped-001")
+    assert seeded_ids == (
+        "case-rakesh-001",
+        "case-capped-001",
+        "case-capped-002",
+    )
     assert repository.calls == [(DEMO_CASES, DEMO_TIME_ANCHOR)]

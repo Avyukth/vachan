@@ -309,6 +309,7 @@ def test_sanctioned_reset_is_scoped_authorized_and_audited(
     }
     assert cases == {
         "case-capped-001": DEMO_MOCK_LABEL,
+        "case-capped-002": DEMO_MOCK_LABEL,
         "case-rakesh-001": DEMO_MOCK_LABEL,
         "non-demo-case": "NOT DEMO",
     }
@@ -333,7 +334,7 @@ def test_sanctioned_reset_is_scoped_authorized_and_audited(
         """
     ).fetchone()
     assert dict(audit) == {
-        "governed_case_count": 2,
+        "governed_case_count": 3,
         "removed_call_count": 1,
         "redacted_reason": "sanctioned_demo_reset",
     }
@@ -413,7 +414,7 @@ def test_reset_authority_cannot_be_forged_through_ledger_attributes(
             (DEMO_MOCK_LABEL,),
         )
 
-    assert ledger.connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 2
+    assert ledger.connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 3
     assert ledger.connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 1
     assert ledger.connection.execute("SELECT COUNT(*) FROM tool_decisions").fetchone()[0] == 1
     assert (

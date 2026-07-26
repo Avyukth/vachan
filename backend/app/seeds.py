@@ -79,7 +79,10 @@ RAKESH_CASE = MockCaseSeed(
     case_id="case-rakesh-001",
     borrower_display_name="Rakesh Yadav",
     eligible=True,
-    contact_cap_remaining=2,
+    # Demo-day headroom: rehearsal (sarvam-ztt) runs the happy path 3x consecutively and
+    # judges may ask for repeat runs. A low cap would refuse the eligible case mid-demo and
+    # look like a bug rather than the deliberate refusal we stage on case-capped-001.
+    contact_cap_remaining=40,
     verification=VerificationSeed(
         birth_day=14,
         birth_month=9,
@@ -101,7 +104,10 @@ CONTACT_CAPPED_CASE = MockCaseSeed(
     case_id="case-capped-001",
     borrower_display_name="Meera Kulkarni",
     eligible=True,
-    contact_cap_remaining=0,
+    # Raised to 10 by operator decision (26 Jul): Meera is a CALLABLE rehearsal case.
+    # The BLOCKED_POLICY refusal beat now lives on case-capped-002 (Farida, cap 0).
+    # Do not revert this to 0 — retarget refusal tests to case-capped-002 instead.
+    contact_cap_remaining=10,
     verification=VerificationSeed(
         birth_day=3,
         birth_month=2,
@@ -118,7 +124,31 @@ CONTACT_CAPPED_CASE = MockCaseSeed(
     ),
 )
 
-DEMO_CASES = (RAKESH_CASE, CONTACT_CAPPED_CASE)
+CAP_EXHAUSTED_CASE = MockCaseSeed(
+    case_id="case-capped-002",
+    borrower_display_name="Farida Sheikh",
+    eligible=True,
+    # Dedicated refusal fixture: cap 0 is the ONLY thing producing the BLOCKED_POLICY
+    # beat ("the system refuses its own operator" — deck slide 06, matrix case 13).
+    # Never raise this. Meera (case-capped-001) is the callable rehearsal case.
+    contact_cap_remaining=0,
+    verification=VerificationSeed(
+        birth_day=21,
+        birth_month=11,
+        reference_last4="5063",
+    ),
+    account=MockAccountSeed(
+        lender_name="Sahyog Finance (Mock)",
+        outstanding_minor=1_680_000,
+        emi_schedule=(
+            InstallmentSeed(date(2026, 5, 20), 560_000, "PAID"),
+            InstallmentSeed(date(2026, 6, 20), 560_000, "OVERDUE"),
+            InstallmentSeed(date(2026, 7, 20), 560_000, "OVERDUE"),
+        ),
+    ),
+)
+
+DEMO_CASES = (RAKESH_CASE, CONTACT_CAPPED_CASE, CAP_EXHAUSTED_CASE)
 
 
 class DemoSeedRepository(Protocol):

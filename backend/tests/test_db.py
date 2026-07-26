@@ -49,7 +49,11 @@ def ledger(connection: sqlite3.Connection) -> EvidenceLedger:
 
 
 def seed_cases(ledger: EvidenceLedger) -> None:
-    assert reset_and_reseed_demo_cases(ledger) == ("case-rakesh-001", "case-capped-001")
+    assert reset_and_reseed_demo_cases(ledger) == (
+        "case-rakesh-001",
+        "case-capped-001",
+        "case-capped-002",
+    )
 
 
 def start_call(
@@ -548,5 +552,5 @@ def test_demo_reset_is_scoped_and_refused_during_active_call(
     ledger.replace_demo_cases(DEMO_CASES, demo_time_anchor=DEMO_TIME_ANCHOR)
 
     ids = {row["id"] for row in connection.execute("SELECT id FROM cases ORDER BY id").fetchall()}
-    assert ids == {"case-capped-001", "case-rakesh-001", "non-demo-case"}
+    assert ids == {"case-capped-001", "case-capped-002", "case-rakesh-001", "non-demo-case"}
     assert connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0

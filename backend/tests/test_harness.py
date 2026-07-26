@@ -16,7 +16,7 @@ from app.actions import (
 )
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
 from app.db import SCHEMA_VERSION, EvidenceLedger
-from app.seeds import DEMO_TIME_ANCHOR
+from app.seeds import DEMO_TIME_ANCHOR, RAKESH_CASE
 from app.states import CallState, IdentityState, PromiseState
 from tests.fakes import FakeSarvamClient, FrozenDemoClock, SarvamScenario
 
@@ -54,6 +54,7 @@ def test_database_fixture_is_migrated_seeded_and_fresh(
     assert db_connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert [row["id"] for row in db_connection.execute("SELECT id FROM cases ORDER BY id")] == [
         "case-capped-001",
+        "case-capped-002",
         "case-rakesh-001",
     ]
     db_connection.execute("UPDATE cases SET contact_cap_remaining = 1 WHERE id = 'case-rakesh-001'")
@@ -65,7 +66,7 @@ def test_database_fixture_does_not_share_prior_test_mutations(
     remaining = db_connection.execute(
         "SELECT contact_cap_remaining FROM cases WHERE id = 'case-rakesh-001'"
     ).fetchone()[0]
-    assert remaining == 2
+    assert remaining == RAKESH_CASE.contact_cap_remaining
 
 
 def test_frozen_clock_is_the_seeded_demo_anchor(

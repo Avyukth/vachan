@@ -677,7 +677,7 @@ def test_matrix_13_contact_cap_blocks_real_start_before_call_row() -> None:
     with TestClient(application) as client:
         preflight = client.post(
             "/api/preflight",
-            json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},
+            json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-002"},
             headers={
                 MICROPHONE_HEADER: "granted",
                 AUDIO_OUTPUT_HEADER: "confirmed",
@@ -685,7 +685,7 @@ def test_matrix_13_contact_cap_blocks_real_start_before_call_row() -> None:
         )
         denied_start = client.post(
             "/api/call/start",
-            json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},
+            json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-002"},
         )
 
     diagnostics = {

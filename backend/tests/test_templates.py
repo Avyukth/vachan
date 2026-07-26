@@ -107,7 +107,8 @@ def test_code_can_select_verification_failure_close_without_an_llm_intent() -> N
     response = render_template(TemplateId.VERIFY_FAILED_CLOSE)
 
     assert is_bank_member(response)
-    assert "पहचान" in response
+    assert response == "मैं आपको दोबारा कॉल करके पुष्टि कर लूँगी। धन्यवाद।"
+    assert "पहचान" not in response
 
 
 def test_out_of_range_variant_fails_closed() -> None:

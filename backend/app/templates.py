@@ -36,9 +36,7 @@ TEMPLATE_BANK = MappingProxyType(
             "reference के आख़िरी चार अक्षर बताएँ। कृपया कोई OTP या PIN साझा न करें।",
         ),
         TemplateId.CLARIFY: ("माफ़ कीजिए, मैं स्पष्ट रूप से समझ नहीं पाई। कृपया एक बार फिर कहेंगे?",),
-        TemplateId.VERIFY_FAILED_CLOSE: (
-            "माफ़ कीजिए, मैं इस कॉल पर आपकी पहचान पक्की नहीं कर पाई। मैं अभी कॉल समाप्त कर रही हूँ।",
-        ),
+        TemplateId.VERIFY_FAILED_CLOSE: ("मैं आपको दोबारा कॉल करके पुष्टि कर लूँगी। धन्यवाद।",),
         TemplateId.THIRD_PARTY_CALLBACK: (
             "यह Rakesh जी की personal call है। कृपया उनसे कह दीजिए कि Vachan assistant "
             "का फ़ोन आया था। बस इतना ही।",

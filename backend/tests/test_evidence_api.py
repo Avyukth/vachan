@@ -239,6 +239,33 @@ def test_safe_utterance_projection_uses_typed_persisted_text_not_timing_placehol
     ledger.close()
 
 
+def test_audio_suppression_projects_as_content_free_diagnostic() -> None:
+    ledger = _ledger()
+    active = _state()
+    asyncio.run(
+        ledger.append_event(
+            call_id=CALL_ID,
+            ts=datetime.now(UTC),
+            event_type=LedgerEventType.AUDIO_SUPPRESSED,
+            state_before=active,
+            state_after=active,
+            redacted_reason="audio_suppressed:agent_floor:interrupted_in_progress",
+        )
+    )
+
+    projected = read_evidence_events(ledger, CALL_ID)
+
+    assert len(projected) == 1
+    assert projected[0].type.value == "diagnostic"
+    assert projected[0].payload == {
+        "source": PERSISTED_LEDGER_SOURCE,
+        "ledger_type": LedgerEventType.AUDIO_SUPPRESSED.value,
+        "reason": "audio_suppressed:agent_floor:interrupted_in_progress",
+        "component": "audio_suppression",
+    }
+    ledger.close()
+
+
 def test_guard_block_projects_only_the_fixed_safe_replacement() -> None:
     ledger = _ledger()
     verifying = _state(identity=IdentityState.VERIFYING)

@@ -75,7 +75,10 @@ def _event_category(ledger_type: str) -> EventType:
         return EventType.ERROR
     if ledger_type == LedgerEventType.SAFE_UTTERANCE.value:
         return EventType.UTTERANCE
-    if ledger_type == LedgerEventType.TURN_TIMING.value:
+    if ledger_type in {
+        LedgerEventType.TURN_TIMING.value,
+        LedgerEventType.AUDIO_SUPPRESSED.value,
+    }:
         return EventType.DIAGNOSTIC
     return EventType.STATE_CHANGE
 
@@ -117,7 +120,11 @@ def _row_to_event(row: sqlite3.Row) -> ServerEvent:
             }
         )
     elif event_type is EventType.DIAGNOSTIC:
-        payload["component"] = "turn_timing"
+        payload["component"] = (
+            "audio_suppression"
+            if ledger_type == LedgerEventType.AUDIO_SUPPRESSED.value
+            else "turn_timing"
+        )
     elif event_type is EventType.ERROR:
         payload["component"] = reason.removeprefix("technical_failure:")
     else:

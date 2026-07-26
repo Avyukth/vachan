@@ -50,6 +50,7 @@ class LedgerEventType(StrEnum):
     OPERATOR_TAKEOVER = "OPERATOR_TAKEOVER"
     DISPOSITION_SET = "DISPOSITION_SET"
     TURN_TIMING = "TURN_TIMING"
+    AUDIO_SUPPRESSED = "AUDIO_SUPPRESSED"
 
 
 class EvidenceInvariant(StrEnum):

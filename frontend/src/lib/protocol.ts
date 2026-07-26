@@ -26,6 +26,11 @@ export interface ProtocolMessage {
 	readonly api_version: ProtocolVersion;
 }
 
+export interface AgentFloorControlFrame extends ProtocolMessage {
+	readonly type: 'agent_floor';
+	readonly held: boolean;
+}
+
 export type PreflightResult = 'READY' | 'BLOCKED_POLICY' | 'BLOCKED_TECHNICAL';
 
 export type EventType =

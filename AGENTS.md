@@ -300,6 +300,25 @@ drop themselves); never `except: pass`.
 | Checks | `bun run check` (svelte-check) |
 | Styling | plain CSS per the Kinetic Operator system (DESIGN.md): #101214 bg, #191D21 panels, single amber #D97B29 accent (promise moments ONLY), green/rust semantic-only, monospace for ALL numbers and state labels. No component library today. |
 
+Devanagari rules (learned by shipping it broken — see `a116bef`):
+- **Every font stack that can hold Hindi must name a Devanagari face.** `--font-mono` ended at
+  `monospace`, which has no Devanagari coverage, so the ledger's Hindi was shaped by a
+  Latin-only face and matras (ि े ै above, ु ृ below) collapsed into the base glyph. Keep the
+  Latin mono faces FIRST so digits/states keep their grid; Devanagari falls through per glyph.
+- **No `letter-spacing` on Devanagari — ever.** Devanagari is shaped, not tracked. The brand
+  `वचन` inherited `-0.04em` (−1.28px at 32px) and rendered visibly crushed. Reset to `normal`.
+- **Devanagari needs more size and leading than the equivalent Latin.** 0.68rem/1.4 left no
+  vertical room for stacked matras; ledger rows are 0.8rem/1.85. Never set Hindi below ~12px.
+- There is **no `@font-face` and no bundled font file** in this repo. Family names resolve only
+  if the viewer has them, so `--font-deva` names faces that exist on the demo machine
+  (Kohinoor Devanagari at `/System/Library/Fonts/Kohinoor.ttc`) with Nirmala UI for Windows.
+  If you add a webfont, self-host it — do not rely on a CDN the venue may not reach.
+- **Template bank copy is Devanagari, not romanized.** `STT_RECOVERY` shipped as
+  `"line kharab hai, dobara boliye"`; Bulbul pronounces romanized Hindi as English and it
+  renders in the wrong face. A test asserts the line is not ASCII.
+- Verify by measuring, not by eye: read `getComputedStyle` for `fontFamily`, `fontSize`,
+  `letterSpacing` on an element that actually contains `[ऀ-ॿ]`, then zoom a screenshot.
+
 Audio rules (the hard-won ones):
 - Capture via **AudioWorklet** → mono PCM16 @ 16 kHz (browser native rate is usually 48 kHz —
   resample; `MediaRecorder` WebM/Opus is ONLY acceptable on the REST fallback path).

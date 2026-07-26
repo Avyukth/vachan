@@ -16,7 +16,7 @@ from app.guard import (
 )
 from app.seeds import DEMO_CASES, RAKESH_CASE, MockCaseSeed
 from app.states import IdentityState, PromiseState
-from app.templates import BANK_MEMBERS
+from app.templates import BANK_MEMBERS, is_bank_member
 
 
 def context(
@@ -168,6 +168,7 @@ def test_block_discards_entire_draft_and_records_only_redacted_evidence(
 
     assert result.allowed is False
     assert result.speech_text == SAFE_OUTPUT_LINE
+    assert is_bank_member(result.speech_text)
     assert blocked_draft not in result.speech_text
     assert recorded == [result.blocked_event]
 

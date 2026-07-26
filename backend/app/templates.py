@@ -22,6 +22,7 @@ class TemplateId(StrEnum):
     VERIFY_FAILED_CLOSE = "VERIFY_FAILED_CLOSE"
     THIRD_PARTY_CALLBACK = "THIRD_PARTY_CALLBACK"
     TECH_DIFFICULTY_CLOSE = "TECH_DIFFICULTY_CLOSE"
+    OUTPUT_GUARD_FALLBACK = "OUTPUT_GUARD_FALLBACK"
 
 
 TEMPLATE_BANK = MappingProxyType(
@@ -45,6 +46,9 @@ TEMPLATE_BANK = MappingProxyType(
         ),
         TemplateId.TECH_DIFFICULTY_CLOSE: (
             "तकनीकी दिक्कत के कारण मैं सुरक्षित रूप से आगे नहीं बढ़ सकती। मैं अभी कॉल समाप्त कर रही हूँ।",
+        ),
+        TemplateId.OUTPUT_GUARD_FALLBACK: (
+            "माफ़ कीजिए, मैं वह बात सुरक्षित रूप से नहीं कह सकती। कृपया एक क्षण रुकिए।",
         ),
     }
 )

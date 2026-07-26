@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.guard import SAFE_OUTPUT_LINE
 from app.seeds import DEMO_CASES
 from app.templates import (
     BANK_MEMBERS,
@@ -111,6 +112,14 @@ def test_code_can_select_verification_failure_close_without_an_llm_intent() -> N
     assert "पहचान" not in response
 
 
+def test_output_guard_fallback_is_reviewed_registry_copy() -> None:
+    """The fourth-layer safe line shares the immutable speech registry."""
+    response = render_template(TemplateId.OUTPUT_GUARD_FALLBACK)
+
+    assert response == SAFE_OUTPUT_LINE
+    assert is_bank_member(SAFE_OUTPUT_LINE)
+
+
 def test_out_of_range_variant_fails_closed() -> None:
     """No unreviewed fallback is synthesized for a missing phrasing."""
     with pytest.raises(TemplateVariantError):
@@ -156,4 +165,4 @@ def test_every_bank_member_avoids_preconfirmation_disclosure_markers(
 def test_template_ids_and_bank_are_complete() -> None:
     """Every frozen ID has reviewed copy and no extra family exists."""
     assert set(TEMPLATE_BANK) == set(TemplateId)
-    assert len(BANK_MEMBERS) == 9
+    assert len(BANK_MEMBERS) == 10

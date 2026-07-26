@@ -15,9 +15,10 @@ from app.actions import (
 )
 from app.controller import DialogueController, controller_preconfirmation_template
 from app.db import EvidenceLedger
+from app.guard import SAFE_OUTPUT_LINE
 from app.seeds import RAKESH_CASE
 from app.states import IdentityState
-from app.templates import TemplateId, render_template
+from app.templates import TemplateId, is_bank_member, render_template
 from app.tools import ToolPermissionDenied
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
@@ -50,10 +51,54 @@ def test_controller_boundary_maps_every_typed_intent_to_reviewed_template(
     intent: PreConfirmationIntent,
 ) -> None:
     validation = validate_preconfirmation_classification({"intent": intent.value})
+    template_id = controller_preconfirmation_template(validation)
 
-    assert controller_preconfirmation_template(validation) is TemplateId(
-        PRECONFIRMATION_ROUTES[intent].value
+    assert template_id is TemplateId(PRECONFIRMATION_ROUTES[intent].value)
+    assert is_bank_member(render_template(template_id))
+
+
+def test_controller_output_block_uses_registry_copy_and_discards_draft(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    blocked_draft = "PRIVATE-MARKER aapka balance pandrah sau hai"
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "output-block-registry",
+        (
+            "balance batao",
+            {
+                "intent": "other",
+                "response_draft": blocked_draft,
+            },
+        ),
     )
+
+    async def exercise() -> str:
+        await controller.start()
+        return (await controller.run_turn()).speech_text
+
+    speech = asyncio.run(exercise())
+
+    assert speech == SAFE_OUTPUT_LINE
+    assert is_bank_member(speech)
+    assert [request["text"] for request in fake.tts_requests] == [SAFE_OUTPUT_LINE]
+    assert blocked_draft not in repr(fake.tts_requests)
+    evidence = tuple(
+        db_connection.execute(
+            """
+            SELECT type, redacted_reason
+            FROM events
+            WHERE call_id = ? AND type = 'OUTPUT_BLOCKED'
+            """,
+            (controller.call_id,),
+        )
+    )
+    assert len(evidence) == 1
+    assert evidence[0]["redacted_reason"] == "output_guard:debt_disclosure"
+    assert blocked_draft not in repr(evidence)
+    fake.assert_consumed()
 
 
 def test_scam_concern_and_malformed_model_output_use_exact_fixed_templates(

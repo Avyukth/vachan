@@ -22,8 +22,9 @@ from enum import Enum, StrEnum
 from app.contracts import LedgerEventType
 from app.seeds import MockCaseSeed
 from app.states import IdentityState, PromiseState
+from app.templates import TemplateId, render_template
 
-SAFE_OUTPUT_LINE = "माफ़ कीजिए, मैं वह बात सुरक्षित रूप से नहीं कह सकती। कृपया एक क्षण रुकिए।"
+SAFE_OUTPUT_LINE = render_template(TemplateId.OUTPUT_GUARD_FALLBACK)
 
 
 class GuardCategory(StrEnum):

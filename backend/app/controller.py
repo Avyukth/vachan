@@ -823,6 +823,15 @@ class DialogueController:
         )
         return read_back
 
+    def _promise_fact_recovery(self, denial: ToolPermissionDenied) -> str:
+        """Ask only for the missing promise field without echoing caller facts."""
+
+        template_id = {
+            "invalid_action_facts=missing_amount": TemplateId.PROMISE_AMOUNT_REQUIRED,
+            "invalid_action_facts=missing_date": TemplateId.PROMISE_DATE_REQUIRED,
+        }.get(denial.decision.reason, TemplateId.CLARIFY)
+        return self._reviewed_template(template_id)
+
     async def _correct_promise(
         self,
         transcript: str,
@@ -949,7 +958,8 @@ class DialogueController:
         # counts are integers. The transcript, the model's response_draft, and every
         # borrower value stay out of the log, so this cannot leak account data.
         _LOGGER.info(
-            "confirmed_action call_id=%s intent=%s accepted=%s handover=%s promise=%s history_msgs=%d",
+            "confirmed_action call_id=%s intent=%s accepted=%s handover=%s "
+            "promise=%s history_msgs=%d",
             self.call_id,
             getattr(action.intent, "value", action.intent),
             validation.accepted,
@@ -976,8 +986,8 @@ class DialogueController:
                     action.amount_minor,
                     action.date_phrase,
                 )
-            except ToolPermissionDenied:
-                return self._reviewed_template(TemplateId.CLARIFY), None
+            except ToolPermissionDenied as denial:
+                return self._promise_fact_recovery(denial), None
             return response, None
         if action.intent is Intent.CORRECT_PROMISE:
             try:

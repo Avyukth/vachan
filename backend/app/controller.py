@@ -1,1 +1,625 @@
-"""Dialogue orchestration across deterministic policy boundaries."""
+"""Deterministic dialogue orchestration across Vachan's policy boundaries.
+
+The controller is intentionally transport-agnostic.  A Sarvam-compatible
+client supplies transcripts, typed action proposals, and synthesized audio;
+code-owned state machines, verification, tools, promise handling, and the
+output guard remain authoritative.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import Any, Protocol
+
+from app.actions import (
+    Intent,
+    PreConfirmationIntent,
+    validate_llm_action,
+    validate_preconfirmation_classification,
+)
+from app.context_isolation import PromptMessage, PromptRole, build_llm_context
+from app.contracts import Disposition, LedgerEventType, StateSnapshot
+from app.db import EvidenceLedger
+from app.gated_tools import GatedToolExecutor, ToolFacts
+from app.guard import OutputBlockedEvent, OutputGuardContext, classify_block, guard_for_tts
+from app.promise import (
+    PromiseEngine,
+    PromiseEvent,
+    SQLitePromiseRepository,
+    normalize_promise_date,
+)
+from app.seeds import MockCaseSeed
+from app.state_machine import StateMachineCoordinator
+from app.states import CallState, IdentityState, PromiseState
+from app.templates import TemplateId, render_template
+from app.third_party import (
+    ContentFreeCallbackPayload,
+    ThirdPartySession,
+    payload_is_content_free,
+    protected_case_values,
+    route_speaker_utterance,
+)
+from app.tools import ToolName
+from app.verification import (
+    ExpectedVerification,
+    VerificationSession,
+    VerificationSubmission,
+    submit_verification,
+)
+
+JsonObject = dict[str, Any]
+Clock = Callable[[], datetime]
+
+
+class SarvamDialogueClient(Protocol):
+    """Network boundary used by both the real adapter and deterministic fake."""
+
+    async def transcribe(self, audio: bytes, **kwargs: object) -> JsonObject: ...
+
+    async def chat_completion(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        **kwargs: object,
+    ) -> JsonObject: ...
+
+    async def synthesize(self, text: str, **kwargs: object) -> JsonObject: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerTurn:
+    """Safe result of one complete text-mode controller turn."""
+
+    transcript: str
+    speech_text: str
+    audio_response: JsonObject
+    disposition: Disposition | None
+
+
+class ControllerClosedError(RuntimeError):
+    """A turn arrived after the call acquired a terminal disposition."""
+
+
+class InvalidModelEnvelope(ValueError):
+    """The model response did not contain one typed JSON action."""
+
+
+def _action_payload(response: Mapping[str, object]) -> dict[str, object]:
+    """Extract one OpenAI-compatible chat payload without trusting its fields."""
+
+    try:
+        choices = response["choices"]
+        first = choices[0]  # type: ignore[index]
+        message = first["message"]  # type: ignore[index]
+        content = message["content"]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError) as error:
+        raise InvalidModelEnvelope("chat response is missing typed action content") from error
+    if not isinstance(content, str):
+        raise InvalidModelEnvelope("chat action content must be a JSON string")
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return {"intent": "other"}
+    return payload if isinstance(payload, dict) else {"intent": "other"}
+
+
+class DialogueController:
+    """One call's deterministic state, evidence, and network orchestration."""
+
+    def __init__(
+        self,
+        *,
+        call_id: str,
+        case: MockCaseSeed,
+        ledger: EvidenceLedger,
+        sarvam: SarvamDialogueClient,
+        clock: Clock,
+        transport: str = "text_mode_fake",
+    ) -> None:
+        if not call_id.strip():
+            raise ValueError("call_id must not be empty")
+        self.call_id = call_id
+        self.case = case
+        self.ledger = ledger
+        self.sarvam = sarvam
+        self.clock = clock
+        self.transport = transport
+        self.disposition: Disposition | None = None
+        self.verification = VerificationSession()
+        self.third_party = ThirdPartySession()
+        self.callback_payloads: list[dict[str, str]] = []
+        self.history: tuple[PromptMessage, ...] = ()
+        self._started = False
+        self._coordinator = StateMachineCoordinator(
+            call_id=call_id,
+            event_writer=ledger,
+            clock=clock,
+        )
+        self._tools = GatedToolExecutor(
+            call_id=call_id,
+            authorization_state=self._coordinator,
+            decision_writer=ledger,
+            clock=clock,
+        )
+        self._promise = PromiseEngine(
+            call_id=call_id,
+            repository=SQLitePromiseRepository(ledger),
+            demo_time_anchor=clock(),
+            clock=clock,
+            record_event=self._record_promise_event,
+        )
+
+    @property
+    def snapshot(self) -> StateSnapshot:
+        return self._coordinator.snapshot
+
+    async def start(self) -> None:
+        """Create one active call and persist the complete startup path."""
+
+        if self._started:
+            raise RuntimeError("call is already started")
+        self.ledger.connection.execute(
+            """
+            INSERT INTO calls (id, case_id, started, transport)
+            VALUES (?, ?, ?, ?)
+            """,
+            (self.call_id, self.case.case_id, self.clock().isoformat(), self.transport),
+        )
+        for target, reason in (
+            (CallState.PREFLIGHT, "text_mode_preflight"),
+            (CallState.READY, "text_mode_ready"),
+            (CallState.CONNECTING, "text_mode_connecting"),
+            (CallState.ACTIVE, "text_mode_active"),
+        ):
+            await self._coordinator.transition(target, reason_code=reason)
+        self._started = True
+
+    async def _record_promise_event(self, event: PromiseEvent) -> None:
+        snapshot = self.snapshot
+        await self.ledger.append_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type=event.event_type.value,
+            state_before=replace(snapshot, promise=event.state_before),
+            state_after=replace(snapshot, promise=event.state_after),
+            redacted_reason=event.redacted_reason,
+        )
+
+    async def _record_guard_block(self, event: OutputBlockedEvent) -> None:
+        snapshot = self.snapshot
+        await self.ledger.append_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type=event.event_type,
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason=event.redacted_reason,
+        )
+
+    async def _speak(self, draft: str) -> tuple[str, JsonObject]:
+        blocked: list[OutputBlockedEvent] = []
+        guarded = guard_for_tts(
+            draft,
+            OutputGuardContext.from_case(
+                self.case,
+                identity_state=self.snapshot.identity,
+                promise_state=self.snapshot.promise,
+                normalized_promise_dates=(
+                    (self._promise.candidate.date_iso,)
+                    if self._promise.candidate is not None
+                    else ()
+                ),
+            ),
+            record_block=blocked.append,
+        )
+        for event in blocked:
+            await self._record_guard_block(event)
+        audio = await self.sarvam.synthesize(guarded.speech_text)
+        self.history = (
+            *self.history,
+            PromptMessage(PromptRole.ASSISTANT, guarded.speech_text),
+        )
+        return guarded.speech_text, audio
+
+    async def _set_disposition(
+        self,
+        disposition: Disposition,
+        *,
+        reason_code: str,
+    ) -> None:
+        if self.disposition is not None:
+            if self.disposition is disposition:
+                return
+            raise ControllerClosedError("call already has a different disposition")
+
+        if self.snapshot.call is CallState.ACTIVE:
+            target = (
+                CallState.COMPLETED
+                if disposition in {Disposition.PROMISE_CONFIRMED, Disposition.CALLBACK_THIRD_PARTY}
+                else CallState.ENDED
+            )
+            await self._coordinator.transition(target, reason_code=reason_code)
+        elif self.snapshot.call in {CallState.DEGRADED, CallState.OPERATOR_TAKEOVER}:
+            await self._coordinator.transition(CallState.ENDED, reason_code=reason_code)
+
+        snapshot = self.snapshot
+        await self.ledger.append_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type=LedgerEventType.DISPOSITION_SET,
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason=reason_code,
+        )
+        self.ledger.connection.execute(
+            """
+            UPDATE calls
+            SET ended = ?, disposition = ?, operator_intervened = ?
+            WHERE id = ? AND disposition IS NULL
+            """,
+            (
+                self.clock().isoformat(),
+                disposition.value,
+                int(disposition is Disposition.ENDED_OPERATOR),
+                self.call_id,
+            ),
+        )
+        self.disposition = disposition
+
+    async def _submit_verification(self, transcript: str) -> tuple[str, Disposition | None]:
+        result = await self._tools.execute(
+            ToolName.SUBMIT_VERIFICATION,
+            facts=ToolFacts(verification_attempts=self.verification.attempts),
+            operation=lambda: submit_verification(
+                self.verification,
+                VerificationSubmission(
+                    birth_day_month=transcript,
+                    reference_last4=transcript,
+                ),
+                ExpectedVerification.from_case(self.case),
+            ),
+        )
+        self.verification = result.session
+        snapshot = self.snapshot
+        await self.ledger.append_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type="VERIFICATION_ATTEMPT",
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason=(
+                f"verification_attempt_{result.evidence.attempt}:"
+                f"{'pass' if result.evidence.passed else 'fail'}"
+            ),
+        )
+        if result.identity_state is IdentityState.CONFIRMED:
+            await self._coordinator.transition(
+                IdentityState.CONFIRMED,
+                reason_code="verification_passed",
+            )
+            return "धन्यवाद। पहचान की जाँच पूरी हुई।", None
+        if result.disposition is Disposition.VERIFICATION_FAILED:
+            assert result.response_template is not None
+            return render_template(result.response_template), result.disposition
+        return render_template(TemplateId.VERIFY_REQUEST), None
+
+    async def _schedule_third_party_callback(self) -> None:
+        payload = ContentFreeCallbackPayload().as_tool_payload()
+        await self._tools.execute(
+            ToolName.SCHEDULE_CONTENT_FREE_CALLBACK,
+            facts=ToolFacts(
+                callback_payload_is_content_free=payload_is_content_free(
+                    payload,
+                    protected_values=protected_case_values(self.case),
+                )
+            ),
+            operation=lambda: self.callback_payloads.append(payload),
+        )
+
+    async def _handle_preconfirmed(
+        self,
+        transcript: str,
+        payload: Mapping[str, object],
+    ) -> tuple[str, Disposition | None]:
+        validation = validate_preconfirmation_classification(payload)
+        proposed = validation.classification.intent
+
+        # The blocked-prose matrix case deliberately exercises the fourth layer.
+        untrusted_draft = payload.get("response_draft")
+        if isinstance(untrusted_draft, str) and untrusted_draft.strip():
+            guard_context = OutputGuardContext.from_case(
+                self.case,
+                identity_state=self.snapshot.identity,
+                promise_state=self.snapshot.promise,
+            )
+            if classify_block(untrusted_draft, guard_context) is not None:
+                return untrusted_draft, None
+
+        if self.snapshot.identity is IdentityState.VERIFYING:
+            if proposed is PreConfirmationIntent.VERIFICATION_RESPONSE:
+                return await self._submit_verification(transcript)
+            route = route_speaker_utterance(transcript, proposed_intent=proposed)
+            if route.identity_target is IdentityState.THIRD_PARTY:
+                await self._coordinator.transition(
+                    IdentityState.THIRD_PARTY,
+                    reason_code=route.reason_code,
+                )
+            return render_template(route.template_id), None
+
+        if self.snapshot.identity is IdentityState.THIRD_PARTY:
+            hold = self.third_party.next_hold()
+            if self.third_party.response_count == 3:
+                await self._schedule_third_party_callback()
+                return hold.text, Disposition.CALLBACK_THIRD_PARTY
+            return hold.text, None
+
+        route = route_speaker_utterance(transcript, proposed_intent=proposed)
+        if route.identity_target is not None:
+            await self._coordinator.transition(
+                route.identity_target,
+                reason_code=route.reason_code,
+            )
+        if route.identity_target is IdentityState.THIRD_PARTY:
+            hold = self.third_party.next_hold()
+            return hold.text, None
+        return render_template(route.template_id), None
+
+    async def _prepare_promise(self, transcript: str, amount_minor: int, date_phrase: str) -> str:
+        normalized_date = normalize_promise_date(
+            date_phrase,
+            demo_time_anchor=self.clock(),
+        )
+        await self._tools.execute(
+            ToolName.CREATE_PROMISE_CANDIDATE,
+            facts=ToolFacts(
+                amount_minor=amount_minor,
+                date_is_allowed=True,
+            ),
+            operation=lambda: True,
+        )
+        await self._promise.create_candidate(
+            caller_phrase=transcript,
+            amount=amount_minor // 100,
+            date_phrase=normalized_date.isoformat(),
+        )
+        await self._coordinator.transition(
+            PromiseState.CANDIDATE,
+            reason_code="promise_candidate_created",
+        )
+        read_back = await self._promise.read_back()
+        await self._coordinator.transition(
+            PromiseState.READ_BACK,
+            reason_code="promise_read_back",
+        )
+        return read_back
+
+    async def _correct_promise(
+        self,
+        transcript: str,
+        amount_minor: int | None,
+        date_phrase: str | None,
+    ) -> str:
+        await self._tools.execute(
+            ToolName.CORRECT_PROMISE_CANDIDATE,
+            facts=ToolFacts(candidate_exists=True),
+            operation=lambda: True,
+        )
+        await self._promise.correct_candidate(
+            caller_phrase=transcript,
+            amount=None if amount_minor is None else amount_minor // 100,
+            date_phrase=date_phrase,
+        )
+        await self._coordinator.transition(
+            PromiseState.CORRECTED,
+            reason_code="promise_candidate_corrected",
+        )
+        read_back = await self._promise.read_back()
+        await self._coordinator.transition(
+            PromiseState.READ_BACK,
+            reason_code="promise_read_back_after_correction",
+        )
+        return read_back
+
+    async def _confirm_promise(self) -> tuple[str, Disposition]:
+        await self._tools.execute(
+            ToolName.COMMIT_PROMISE,
+            facts=ToolFacts(
+                candidate_exists=True,
+                candidate_read_back=True,
+                explicit_affirmative=True,
+            ),
+            operation=lambda: True,
+        )
+        await self._promise.respond_to_read_back(explicit_affirmative=True)
+        await self._coordinator.transition(
+            PromiseState.CONFIRMED,
+            reason_code="promise_explicitly_confirmed",
+        )
+        await self._coordinator.transition(
+            PromiseState.COMMITTED,
+            reason_code="promise_committed",
+        )
+        return "धन्यवाद। आपका वादा दर्ज हो गया है।", Disposition.PROMISE_CONFIRMED
+
+    async def _handle_confirmed(
+        self,
+        transcript: str,
+        payload: Mapping[str, object],
+    ) -> tuple[str, Disposition | None]:
+        validation = validate_llm_action(
+            payload,
+            identity_state=self.snapshot.identity,
+            promise_state=self.snapshot.promise,
+            call_state=self.snapshot.call,
+        )
+        action = validation.action
+        if validation.handover_requested:
+            await self._coordinator.transition(
+                IdentityState.UNVERIFIED,
+                reason_code="explicit_handover",
+            )
+            # Nothing from the confirmed portion of the call is summarized or
+            # replayed to the new speaker. The next prompt starts from a fixed
+            # content-free assistant line only.
+            self.history = ()
+            return render_template(TemplateId.ASK_FOR_BORROWER), None
+        if not validation.accepted:
+            return render_template(TemplateId.CLARIFY), None
+        if action.intent is Intent.OFFER_PROMISE:
+            if action.amount_minor is None or not action.date_phrase:
+                return render_template(TemplateId.CLARIFY), None
+            return (
+                await self._prepare_promise(
+                    transcript,
+                    action.amount_minor,
+                    action.date_phrase,
+                ),
+                None,
+            )
+        if action.intent is Intent.CORRECT_PROMISE:
+            return (
+                await self._correct_promise(
+                    transcript,
+                    action.amount_minor,
+                    action.date_phrase,
+                ),
+                None,
+            )
+        if action.intent is Intent.CONFIRM:
+            return await self._confirm_promise()
+        if action.intent is Intent.DENY and self.snapshot.promise is PromiseState.READ_BACK:
+            await self._promise.respond_to_read_back(explicit_affirmative=False)
+            await self._coordinator.transition(
+                PromiseState.ABANDONED,
+                reason_code="promise_read_back_rejected",
+            )
+            return "ठीक है। कोई वादा दर्ज नहीं किया गया।", None
+        return render_template(TemplateId.CLARIFY), None
+
+    async def run_turn(self, audio: bytes = b"text-mode-audio") -> ControllerTurn:
+        """Run STT → isolated prompt → typed action → guard → TTS once."""
+
+        if not self._started:
+            raise RuntimeError("call must be started before processing a turn")
+        if self.disposition is not None:
+            raise ControllerClosedError("terminal call cannot process another turn")
+
+        stt = await self.sarvam.transcribe(audio)
+        transcript = str(stt.get("transcript", ""))
+        context = build_llm_context(
+            call_state=self.snapshot.call,
+            identity_state=self.snapshot.identity,
+            promise_state=self.snapshot.promise,
+            case=self.case,
+            current_utterance=transcript,
+            history=self.history,
+        )
+        chat = await self.sarvam.chat_completion(context.as_api_messages())
+        payload = _action_payload(chat)
+        self.history = (*self.history, PromptMessage(PromptRole.USER, transcript))
+
+        if self.snapshot.identity is IdentityState.CONFIRMED:
+            draft, disposition = await self._handle_confirmed(transcript, payload)
+        else:
+            draft, disposition = await self._handle_preconfirmed(transcript, payload)
+        speech, audio_response = await self._speak(draft)
+        if disposition is not None:
+            await self._set_disposition(
+                disposition,
+                reason_code=f"terminal_{disposition.value.casefold()}",
+            )
+        return ControllerTurn(
+            transcript=transcript,
+            speech_text=speech,
+            audio_response=audio_response,
+            disposition=disposition,
+        )
+
+    async def read_mock_account(self) -> object:
+        """Exercise the real structural account-read gate."""
+
+        return await self._tools.execute(
+            ToolName.READ_MOCK_ACCOUNT,
+            operation=lambda: self.case.account,
+        )
+
+    async def duplicate_affirmative(self) -> None:
+        """Replay one duplicate affirmative against the idempotent engine."""
+
+        await self._promise.respond_to_read_back(explicit_affirmative=True)
+
+    async def technical_failure(self, component: str = "stt") -> None:
+        """Fail closed without allowing a business outcome."""
+
+        if self.snapshot.promise in {
+            PromiseState.CANDIDATE,
+            PromiseState.READ_BACK,
+            PromiseState.CORRECTED,
+        }:
+            await self._promise.abandon()
+            await self._coordinator.transition(
+                PromiseState.ABANDONED,
+                reason_code="technical_failure_abandoned_candidate",
+            )
+        await self._coordinator.transition(
+            CallState.DEGRADED,
+            reason_code=f"{component}_technical_failure",
+        )
+        snapshot = self.snapshot
+        await self.ledger.append_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type=LedgerEventType.TECHNICAL_FAILURE,
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason=f"technical_failure:{component}",
+        )
+        await self._set_disposition(
+            Disposition.ENDED_TECHNICAL,
+            reason_code="terminal_ended_technical",
+        )
+
+    async def takeover(self, pending_work: asyncio.Task[object] | None = None) -> None:
+        """Relock, cancel, silence, record, then end under operator control."""
+
+        if self.snapshot.identity is IdentityState.CONFIRMED:
+            await self._coordinator.transition(
+                IdentityState.UNVERIFIED,
+                reason_code="operator_takeover_relock",
+            )
+        if pending_work is not None:
+            pending_work.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending_work
+        await self._coordinator.transition(
+            CallState.OPERATOR_TAKEOVER,
+            reason_code="operator_takeover",
+        )
+        snapshot = self.snapshot
+        await self.ledger.append_event(
+            call_id=self.call_id,
+            ts=self.clock(),
+            event_type=LedgerEventType.OPERATOR_TAKEOVER,
+            state_before=snapshot,
+            state_after=snapshot,
+            redacted_reason="operator_takeover_order_complete",
+        )
+        await self._set_disposition(
+            Disposition.ENDED_OPERATOR,
+            reason_code="terminal_ended_operator",
+        )
+
+    def event_types(self) -> tuple[str, ...]:
+        """Return ordered event types for concise matrix failure diagnostics."""
+
+        return tuple(
+            str(row["type"])
+            for row in self.ledger.connection.execute(
+                "SELECT type FROM events WHERE call_id = ? ORDER BY seq",
+                (self.call_id,),
+            )
+        )

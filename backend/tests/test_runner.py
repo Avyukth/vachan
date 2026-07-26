@@ -12,7 +12,7 @@ import pytest
 
 from app.runner import (
     AUDIO_CASES,
-    MATRIX_CASE_CONTRACT,
+    MINIMUM_MATRIX_CASES,
     CaseResult,
     EvidenceTier,
     _load_pcm16,
@@ -27,16 +27,16 @@ from app.runner import (
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def _matrix(passed: bool = True) -> tuple[CaseResult, ...]:
+def _matrix(passed: bool = True, *, count: int = 15) -> tuple[CaseResult, ...]:
     return tuple(
         CaseResult(
-            case_id,
-            f"matrix-case-{case_id}",
+            f"{case_number:02d}",
+            f"matrix-case-{case_number:02d}",
             EvidenceTier.MATRIX,
             passed,
             "typed-script",
         )
-        for case_id in MATRIX_CASE_CONTRACT
+        for case_number in range(1, count + 1)
     )
 
 
@@ -68,7 +68,9 @@ def test_audio_amount_parser_accepts_only_reviewed_vectors() -> None:
 def test_matrix_wrapper_derives_every_contracted_result() -> None:
     results = run_matrix()
 
-    assert tuple(result.case_id for result in results) == MATRIX_CASE_CONTRACT
+    assert len(results) >= MINIMUM_MATRIX_CASES
+    assert len({result.case_id for result in results}) == len(results)
+    assert all(result.case_id != "00" for result in results)
     assert all(result.passed for result in results)
     assert all(result.tier is EvidenceTier.MATRIX for result in results)
 
@@ -83,7 +85,11 @@ def test_matrix_collection_drift_names_missing_extra_and_duplicate_ids() -> None
         )
     )
 
-    failure = _matrix_collection_contract_failure(drifted, pytest.ExitCode.OK)
+    failure = _matrix_collection_contract_failure(
+        drifted,
+        pytest.ExitCode.OK,
+        tuple(result.case_id for result in _matrix()),
+    )
 
     assert failure is not None
     assert failure.case_id == "00"
@@ -92,6 +98,36 @@ def test_matrix_collection_drift_names_missing_extra_and_duplicate_ids() -> None
     assert '"extra":["99"]' in failure.detail
     assert '"duplicates":["12"]' in failure.detail
     assert '"exit_code":"OK"' in failure.detail
+
+
+def test_matrix_collection_contract_rejects_a_suite_below_the_safety_floor() -> None:
+    below_floor = _matrix(count=MINIMUM_MATRIX_CASES - 1)
+
+    failure = _matrix_collection_contract_failure(
+        below_floor,
+        pytest.ExitCode.OK,
+        tuple(result.case_id for result in below_floor),
+    )
+
+    assert failure is not None
+    assert f'"minimum":{MINIMUM_MATRIX_CASES}' in failure.detail
+    assert f'"expected_count":{MINIMUM_MATRIX_CASES - 1}' in failure.detail
+
+
+def test_matrix_collection_contract_rejects_unnumbered_cases() -> None:
+    results = (
+        *_matrix(),
+        CaseResult("UNNUMBERED", "missing-id", EvidenceTier.MATRIX, True, "typed-script"),
+    )
+
+    failure = _matrix_collection_contract_failure(
+        results,
+        pytest.ExitCode.OK,
+        tuple(result.case_id for result in results),
+    )
+
+    assert failure is not None
+    assert '"invalid":["UNNUMBERED"]' in failure.detail
 
 
 def test_audio_cases_run_real_controller_boundaries_after_transcription() -> None:
@@ -142,7 +178,7 @@ def test_artifact_separates_offline_matrix_from_real_stt_audio() -> None:
     assert "ts: 2026-07-26T15:42:07+05:30" in artifact
     assert "transport: streaming_pcm16_ws" in artifact
     assert "build: abc1234" in artifact
-    matrix_total = len(MATRIX_CASE_CONTRACT)
+    matrix_total = len(_matrix())
     assert f"matrix (offline): {matrix_total}/{matrix_total}" in artifact
     assert "audio e2e (real STT): 3/3" in artifact
     assert artifact.count("input: prerecorded-wav") == 3
@@ -169,7 +205,7 @@ def test_generate_evidence_writes_current_derived_artifact_and_zero_exit(
 
     assert exit_code == 0
     assert artifact_path.read_text(encoding="utf-8") == artifact
-    total = len(MATRIX_CASE_CONTRACT) + len(AUDIO_CASES)
+    total = len(_matrix()) + len(AUDIO_CASES)
     assert f"score: {total}/{total}" in artifact
 
 

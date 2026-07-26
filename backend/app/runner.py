@@ -47,21 +47,7 @@ IST = ZoneInfo("Asia/Kolkata")
 TRANSPORT_LABEL = "streaming_pcm16_ws"
 STT_TIMEOUT_SECONDS = 20.0
 PCM_CHUNK_BYTES = 3_200
-MATRIX_CASE_CONTRACT = (
-    "01",
-    "02",
-    "03",
-    "04",
-    "05",
-    "06",
-    "07",
-    "08",
-    "09",
-    "10",
-    "11",
-    "12",
-    "13",
-)
+MINIMUM_MATRIX_CASES = 13
 _MATRIX_TEST_NAME = re.compile(r"^test_matrix_(?P<case_id>\d{2})(?:_|$)")
 
 
@@ -146,6 +132,18 @@ class _MatrixPlugin:
 
     def __init__(self) -> None:
         self.results: list[CaseResult] = []
+        self.expected_case_ids: tuple[str, ...] = ()
+
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
+        """Derive the matrix contract from pytest's collected test metadata."""
+
+        case_ids = []
+        for item in session.items:
+            if not item.nodeid.startswith("tests/test_matrix.py::"):
+                continue
+            match = _MATRIX_TEST_NAME.match(item.name)
+            case_ids.append(match.group("case_id") if match is not None else "UNNUMBERED")
+        self.expected_case_ids = tuple(case_ids)
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_makereport(self, item: pytest.Item, call: pytest.CallInfo[Any]):
@@ -177,25 +175,51 @@ class _MatrixPlugin:
 def _matrix_collection_contract_failure(
     results: Sequence[CaseResult],
     exit_code: pytest.ExitCode,
+    expected_case_ids: Sequence[str],
 ) -> CaseResult | None:
     """Describe collection drift without hiding the cases that did execute."""
 
     collected = tuple(result.case_id for result in results)
     counts = Counter(collected)
-    missing = tuple(case_id for case_id in MATRIX_CASE_CONTRACT if counts[case_id] == 0)
-    extra = tuple(sorted(case_id for case_id in counts if case_id not in MATRIX_CASE_CONTRACT))
+    expected = tuple(expected_case_ids)
+    expected_counts = Counter(expected)
+    missing = tuple(
+        case_id
+        for case_id, expected_count in expected_counts.items()
+        if counts[case_id] < expected_count
+    )
+    extra = tuple(sorted(case_id for case_id in counts if case_id not in expected_counts))
     duplicates = tuple(sorted(case_id for case_id, count in counts.items() if count > 1))
+    invalid = tuple(
+        sorted(
+            case_id
+            for case_id in {*expected, *collected}
+            if re.fullmatch(r"\d{2}", case_id) is None
+        )
+    )
     collection_failed = exit_code not in {pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED}
-    if not missing and not extra and not duplicates and not collection_failed:
+    below_floor = len(expected) < MINIMUM_MATRIX_CASES
+    if (
+        not missing
+        and not extra
+        and not duplicates
+        and not invalid
+        and not collection_failed
+        and not below_floor
+    ):
         return None
 
     diagnostic = json.dumps(
         {
             "collected": collected,
+            "collected_count": len(collected),
             "duplicates": duplicates,
             "exit_code": exit_code.name,
-            "expected": MATRIX_CASE_CONTRACT,
+            "expected": expected,
+            "expected_count": len(expected),
             "extra": extra,
+            "invalid": invalid,
+            "minimum": MINIMUM_MATRIX_CASES,
             "missing": missing,
         },
         separators=(",", ":"),
@@ -222,7 +246,11 @@ def run_matrix() -> tuple[CaseResult, ...]:
             plugins=[plugin],
         )
     results = tuple(plugin.results)
-    contract_failure = _matrix_collection_contract_failure(results, exit_code)
+    contract_failure = _matrix_collection_contract_failure(
+        results,
+        exit_code,
+        plugin.expected_case_ids,
+    )
     return results if contract_failure is None else (*results, contract_failure)
 
 

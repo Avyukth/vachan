@@ -3,6 +3,14 @@ import { describe, expect, test } from 'bun:test';
 import { buildOperatorView } from './operator';
 import { PROTOCOL_VERSION, type EventType, type ServerEvent } from './protocol';
 
+declare const Bun: {
+	file(path: URL): { text(): Promise<string> };
+};
+
+const operatorConsoleSource = await Bun.file(
+	new URL('./components/OperatorConsole.svelte', import.meta.url)
+).text();
+
 function event(
 	seq: number,
 	type: EventType,
@@ -120,5 +128,43 @@ describe('ledger-derived operator view', () => {
 
 		expect(view.events).toEqual([]);
 		expect(view.identityState).toBe('—');
+	});
+
+	test('announces WATCH changes and terminal disposition with the required urgency', () => {
+		expect(operatorConsoleSource).toContain('aria-label="Identity state journey"');
+		expect(operatorConsoleSource).toContain('aria-live="polite"');
+		expect(operatorConsoleSource).toContain(
+			"class:promise={view.disposition === 'PROMISE_CONFIRMED'}"
+		);
+		expect(operatorConsoleSource).toContain('aria-live="assertive"');
+		expect(operatorConsoleSource).toContain("class:demoted={state === 'THIRD_PARTY'}");
+	});
+
+	test('keeps safety states projector-readable and first on narrow screens', () => {
+		expect(
+			/\.identity-ribbon\s*\{[^}]*font-size:\s*1\.25rem;/s.test(operatorConsoleSource)
+		).toBe(true);
+		expect(
+			/\.outcome-panel strong\s*\{[^}]*font-size:\s*1\.75rem;/s.test(operatorConsoleSource)
+		).toBe(true);
+		expect(
+			/@media \(max-width: 44rem\)[\s\S]*?\.watch-card\s*\{\s*order:\s*1;[\s\S]*?\.evidence-card\s*\{[^}]*order:\s*2;[\s\S]*?\.call-card\s*\{\s*order:\s*3;/s.test(
+				operatorConsoleSource
+			)
+		).toBe(true);
+	});
+
+	test('spends amber only on the committed promise moment', () => {
+		expect(operatorConsoleSource).toContain(
+			"class:promise={view.promiseState === 'COMMITTED'}"
+		);
+		expect(operatorConsoleSource).toContain(
+			"class:promise={row.tone === 'promise' && row.detail.includes('COMMITTED')}"
+		);
+		expect(
+			operatorConsoleSource.includes(
+				"class:promise={view.promiseState !== '—' && view.promiseState !== 'NONE'}"
+			)
+		).toBe(false);
 	});
 });

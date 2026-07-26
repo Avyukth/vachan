@@ -103,16 +103,32 @@
 				<span>{view.dialogueStep}</span>
 			</div>
 
-			<div class="identity-ribbon" aria-label="Identity state journey">
+			<div
+				class="identity-ribbon"
+				aria-label="Identity state journey"
+				aria-live="polite"
+				aria-atomic="true"
+			>
 				{#each view.identityJourney as state, index (index)}
 					{#if index > 0}<span class="journey-arrow" aria-hidden="true">→</span>{/if}
-					<strong class:confirmed={state === 'CONFIRMED'}>{state}</strong>
+					<strong
+						class:confirmed={state === 'CONFIRMED'}
+						class:demoted={state === 'THIRD_PARTY'}
+					>
+						{state}
+					</strong>
 				{/each}
 			</div>
 
 			<dl>
-				<div><dt>IDENTITY</dt><dd>{view.identityState}</dd></div>
-				<div><dt>PROMISE</dt><dd class:promise={view.promiseState !== '—' && view.promiseState !== 'NONE'}>{view.promiseState}</dd></div>
+				<div>
+					<dt>IDENTITY</dt>
+					<dd class:demoted={view.identityState === 'THIRD_PARTY'}>{view.identityState}</dd>
+				</div>
+				<div>
+					<dt>PROMISE</dt>
+					<dd class:promise={view.promiseState === 'COMMITTED'}>{view.promiseState}</dd>
+				</div>
 				<div><dt>DIALOGUE</dt><dd>{view.dialogueStep}</dd></div>
 				<div>
 					<dt>LATEST TOOL</dt>
@@ -132,7 +148,13 @@
 			</div>
 
 			{#if view.disposition}
-				<div class="outcome-panel">
+				<div
+					class="outcome-panel"
+					class:promise={view.disposition === 'PROMISE_CONFIRMED'}
+					role="alert"
+					aria-live="assertive"
+					aria-atomic="true"
+				>
 					<span>FINAL DISPOSITION</span>
 					<strong>{view.disposition}</strong>
 				</div>
@@ -140,7 +162,11 @@
 
 			<ol aria-live="polite">
 				{#each view.evidence as row (row.seq)}
-					<li class:blocked={row.tone === 'blocked'} class:held={row.tone === 'held'} class:promise={row.tone === 'promise'}>
+					<li
+						class:blocked={row.tone === 'blocked'}
+						class:held={row.tone === 'held'}
+						class:promise={row.tone === 'promise' && row.detail.includes('COMMITTED')}
+					>
 						<code>{String(row.seq).padStart(2, '0')}</code>
 						<div>
 							<strong>{row.label}</strong>
@@ -352,7 +378,7 @@
 		overflow-x: auto;
 		border-bottom: 1px solid var(--color-seam);
 		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		font-size: 1.25rem;
 		white-space: nowrap;
 	}
 
@@ -364,8 +390,17 @@
 		color: var(--color-held);
 	}
 
+	.identity-ribbon strong.demoted,
+	.watch-card dd.demoted {
+		color: var(--color-demoted);
+	}
+
 	.journey-arrow {
 		color: var(--color-muted);
+	}
+
+	.watch-card .card-heading > span {
+		font-size: 1.25rem;
 	}
 
 	.watch-card dl {
@@ -390,6 +425,7 @@
 
 	.watch-card dd {
 		margin: 0;
+		font-size: 1.25rem;
 		text-align: right;
 	}
 
@@ -422,7 +458,12 @@
 	}
 
 	.outcome-panel strong {
-		font-size: 0.76rem;
+		font-size: 1.75rem;
+	}
+
+	.outcome-panel.promise {
+		border-left-color: var(--color-accent);
+		background: color-mix(in srgb, var(--color-accent), transparent 90%);
 	}
 
 	.evidence-card ol {
@@ -501,8 +542,23 @@
 			grid-template-columns: 1fr;
 		}
 
+		.watch-card {
+			order: 1;
+		}
+
 		.evidence-card {
 			grid-column: auto;
+			order: 2;
+		}
+
+		.call-card {
+			order: 3;
+		}
+
+		.identity-ribbon {
+			flex-wrap: wrap;
+			overflow-x: visible;
+			white-space: normal;
 		}
 	}
 </style>

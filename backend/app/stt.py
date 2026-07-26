@@ -158,6 +158,7 @@ class StreamingSttSession:
         self._io_task: asyncio.Task[Any] | None = None
         self._utterance_id = 0
         self._waiting_for_final = False
+        self._speech_in_progress = False
         self._timed_out_utterance: int | None = None
         self._final_wait_started_at: float | None = None
         self._utterance_lock = asyncio.Lock()
@@ -350,11 +351,20 @@ class StreamingSttSession:
         self._reader_task = current
         try:
             while self._is_current(generation):
-                message = await anext(self._responses)
+                # Idle borrower time is not a transport failure. Once Saaras has
+                # announced speech, however, silence from the stream must not
+                # leave the call waiting forever for END_SPEECH.
+                if self._speech_in_progress:
+                    async with asyncio.timeout(self._timeout_seconds):
+                        message = await anext(self._responses)
+                else:
+                    message = await anext(self._responses)
                 signal = _vad_signal(message)
                 if signal == "START_SPEECH":
+                    self._speech_in_progress = True
                     self._begin_utterance()
                 elif signal == "END_SPEECH":
+                    self._speech_in_progress = False
                     self._arm_final_deadline(generation)
 
                 transcript = _final_transcript(message)
@@ -379,6 +389,8 @@ class StreamingSttSession:
                 await self._record_stt_timing()
                 await self._callbacks.on_final_transcript(self.call_id, transcript)
             return SttResult(SttOutcome.DROPPED, reason="call_inactive")
+        except TimeoutError:
+            return await self._degrade(generation, "stt_receive_timeout")
         except StopAsyncIteration:
             return await self._degrade(generation, "stt_network_failure")
         except asyncio.CancelledError:

@@ -97,6 +97,11 @@ class HangingStream(FakeStream):
             return
         await super().flush()
 
+    async def __anext__(self) -> dict[str, Any]:
+        if self.operation == "receive" and self.responses.empty():
+            await self._hang()
+        return await super().__anext__()
+
 
 @dataclass
 class RecordingCallbacks:
@@ -447,6 +452,69 @@ def test_continuous_reader_network_loss_degrades_without_reconnect() -> None:
         assert callbacks.degradations == [("call-stt-001", "stt_network_failure")]
         assert callbacks.transcripts == []
         assert not session.active
+
+    asyncio.run(exercise())
+
+
+def test_continuous_reader_receive_stall_is_bounded_and_degrades_once() -> None:
+    async def exercise() -> None:
+        stream = HangingStream("receive")
+        session, _, callbacks, _ = make_session(
+            stream=stream,
+            timeout_seconds=0.005,
+        )
+        await stream.responses.put({"type": "events", "data": {"signal_type": "START_SPEECH"}})
+
+        result = await session.run_finalized_results()
+
+        assert result.outcome is SttOutcome.DEGRADED
+        assert result.reason == "stt_receive_timeout"
+        assert stream.started.is_set()
+        assert stream.cancelled.is_set()
+        assert callbacks.degradations == [("call-stt-001", "stt_receive_timeout")]
+        assert callbacks.transcripts == []
+        assert callbacks.recovery_prompts == []
+        assert not session.active
+
+    asyncio.run(exercise())
+
+
+def test_continuous_reader_does_not_timeout_an_idle_borrower() -> None:
+    async def exercise() -> None:
+        session, _, callbacks, _ = make_session(timeout_seconds=0.005)
+        reader = asyncio.create_task(session.run_finalized_results())
+
+        await asyncio.sleep(0.01)
+
+        assert session.active
+        assert callbacks.degradations == []
+        session.cancel()
+        assert (await reader).outcome is SttOutcome.DROPPED
+
+    asyncio.run(exercise())
+
+
+def test_takeover_interrupts_receive_stall_without_late_callback() -> None:
+    async def exercise() -> None:
+        stream = HangingStream("receive")
+        session, _, callbacks, active_call = make_session(
+            stream=stream,
+            timeout_seconds=1,
+        )
+        await stream.responses.put({"type": "events", "data": {"signal_type": "START_SPEECH"}})
+        reader = asyncio.create_task(session.run_finalized_results())
+        await stream.started.wait()
+
+        active_call.value = False
+        session.cancel()
+
+        result = await reader
+        assert result.outcome is SttOutcome.DROPPED
+        assert result.reason == "call_cancelled"
+        assert stream.cancelled.is_set()
+        assert callbacks.transcripts == []
+        assert callbacks.recovery_prompts == []
+        assert callbacks.degradations == []
 
     asyncio.run(exercise())
 

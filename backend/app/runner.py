@@ -19,6 +19,7 @@ import sqlite3
 import subprocess
 import unicodedata
 import wave
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +47,22 @@ IST = ZoneInfo("Asia/Kolkata")
 TRANSPORT_LABEL = "streaming_pcm16_ws"
 STT_TIMEOUT_SECONDS = 20.0
 PCM_CHUNK_BYTES = 3_200
+MATRIX_CASE_CONTRACT = (
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+    "11",
+    "12",
+    "13",
+)
+_MATRIX_TEST_NAME = re.compile(r"^test_matrix_(?P<case_id>\d{2})(?:_|$)")
 
 
 class EvidenceTier(StrEnum):
@@ -136,6 +153,8 @@ class _MatrixPlugin:
         report = outcome.get_result()
         if report.when != "call" or not item.nodeid.startswith("tests/test_matrix.py::"):
             return
+        match = _MATRIX_TEST_NAME.match(item.name)
+        case_id = match.group("case_id") if match is not None else "UNNUMBERED"
         detail = ""
         if report.failed:
             connection = item.funcargs.get("db_connection")
@@ -145,7 +164,7 @@ class _MatrixPlugin:
                 detail = "seq: []"
         self.results.append(
             CaseResult(
-                case_id=f"{len(self.results) + 1:02d}",
+                case_id=case_id,
                 name=item.name.removeprefix("test_matrix_").replace("_", "-"),
                 tier=EvidenceTier.MATRIX,
                 passed=report.passed,
@@ -155,8 +174,45 @@ class _MatrixPlugin:
         )
 
 
+def _matrix_collection_contract_failure(
+    results: Sequence[CaseResult],
+    exit_code: pytest.ExitCode,
+) -> CaseResult | None:
+    """Describe collection drift without hiding the cases that did execute."""
+
+    collected = tuple(result.case_id for result in results)
+    counts = Counter(collected)
+    missing = tuple(case_id for case_id in MATRIX_CASE_CONTRACT if counts[case_id] == 0)
+    extra = tuple(sorted(case_id for case_id in counts if case_id not in MATRIX_CASE_CONTRACT))
+    duplicates = tuple(sorted(case_id for case_id, count in counts.items() if count > 1))
+    collection_failed = exit_code not in {pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED}
+    if not missing and not extra and not duplicates and not collection_failed:
+        return None
+
+    diagnostic = json.dumps(
+        {
+            "collected": collected,
+            "duplicates": duplicates,
+            "exit_code": exit_code.name,
+            "expected": MATRIX_CASE_CONTRACT,
+            "extra": extra,
+            "missing": missing,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return CaseResult(
+        "00",
+        "matrix-collection-contract",
+        EvidenceTier.MATRIX,
+        False,
+        "typed-script",
+        f"seq: [] collection={diagnostic}",
+    )
+
+
 def run_matrix() -> tuple[CaseResult, ...]:
-    """Execute the real 13-case pytest matrix without parsing console prose."""
+    """Execute the contracted pytest matrix without parsing console prose."""
 
     plugin = _MatrixPlugin()
     pytest_output = io.StringIO()
@@ -166,18 +222,8 @@ def run_matrix() -> tuple[CaseResult, ...]:
             plugins=[plugin],
         )
     results = tuple(plugin.results)
-    if len(results) != 13 and exit_code == pytest.ExitCode.OK:
-        return (
-            CaseResult(
-                "00",
-                "matrix-collection",
-                EvidenceTier.MATRIX,
-                False,
-                "typed-script",
-                f"seq: [] expected 13 cases, collected {len(results)}",
-            ),
-        )
-    return results
+    contract_failure = _matrix_collection_contract_failure(results, exit_code)
+    return results if contract_failure is None else (*results, contract_failure)
 
 
 def _load_pcm16(wav_path: Path) -> bytes:

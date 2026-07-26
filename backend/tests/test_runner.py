@@ -8,11 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.runner import (
     AUDIO_CASES,
+    MATRIX_CASE_CONTRACT,
     CaseResult,
     EvidenceTier,
     _load_pcm16,
+    _matrix_collection_contract_failure,
     generate_evidence,
     parse_audio_amount,
     render_artifact,
@@ -26,13 +30,13 @@ IST = ZoneInfo("Asia/Kolkata")
 def _matrix(passed: bool = True) -> tuple[CaseResult, ...]:
     return tuple(
         CaseResult(
-            f"{index:02d}",
-            f"matrix-case-{index}",
+            case_id,
+            f"matrix-case-{case_id}",
             EvidenceTier.MATRIX,
             passed,
             "typed-script",
         )
-        for index in range(1, 14)
+        for case_id in MATRIX_CASE_CONTRACT
     )
 
 
@@ -61,12 +65,33 @@ def test_audio_amount_parser_accepts_only_reviewed_vectors() -> None:
     assert parse_audio_amount("नहीं एक हजार पचास रुपये") == 105_000
 
 
-def test_matrix_wrapper_derives_all_thirteen_results() -> None:
+def test_matrix_wrapper_derives_every_contracted_result() -> None:
     results = run_matrix()
 
-    assert len(results) == 13
+    assert tuple(result.case_id for result in results) == MATRIX_CASE_CONTRACT
     assert all(result.passed for result in results)
     assert all(result.tier is EvidenceTier.MATRIX for result in results)
+
+
+def test_matrix_collection_drift_names_missing_extra_and_duplicate_ids() -> None:
+    drifted = [result for result in _matrix() if result.case_id not in {"11", "12"}]
+    drifted.extend(
+        (
+            CaseResult("12", "duplicate-12", EvidenceTier.MATRIX, True, "typed-script"),
+            CaseResult("12", "duplicate-12-again", EvidenceTier.MATRIX, True, "typed-script"),
+            CaseResult("99", "extra-99", EvidenceTier.MATRIX, True, "typed-script"),
+        )
+    )
+
+    failure = _matrix_collection_contract_failure(drifted, pytest.ExitCode.OK)
+
+    assert failure is not None
+    assert failure.case_id == "00"
+    assert failure.passed is False
+    assert '"missing":["11"]' in failure.detail
+    assert '"extra":["99"]' in failure.detail
+    assert '"duplicates":["12"]' in failure.detail
+    assert '"exit_code":"OK"' in failure.detail
 
 
 def test_audio_cases_run_real_controller_boundaries_after_transcription() -> None:
@@ -117,10 +142,11 @@ def test_artifact_separates_offline_matrix_from_real_stt_audio() -> None:
     assert "ts: 2026-07-26T15:42:07+05:30" in artifact
     assert "transport: streaming_pcm16_ws" in artifact
     assert "build: abc1234" in artifact
-    assert "matrix (offline): 13/13" in artifact
+    matrix_total = len(MATRIX_CASE_CONTRACT)
+    assert f"matrix (offline): {matrix_total}/{matrix_total}" in artifact
     assert "audio e2e (real STT): 3/3" in artifact
     assert artifact.count("input: prerecorded-wav") == 3
-    assert artifact.endswith("score: 16/16\n")
+    assert artifact.endswith(f"score: {matrix_total + 3}/{matrix_total + 3}\n")
 
 
 def test_generate_evidence_writes_current_derived_artifact_and_zero_exit(
@@ -143,7 +169,8 @@ def test_generate_evidence_writes_current_derived_artifact_and_zero_exit(
 
     assert exit_code == 0
     assert artifact_path.read_text(encoding="utf-8") == artifact
-    assert "score: 16/16" in artifact
+    total = len(MATRIX_CASE_CONTRACT) + len(AUDIO_CASES)
+    assert f"score: {total}/{total}" in artifact
 
 
 def test_any_failure_forces_nonzero_exit_and_preserves_diagnostic(

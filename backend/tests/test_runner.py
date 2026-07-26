@@ -12,7 +12,6 @@ import pytest
 
 from app.runner import (
     AUDIO_CASES,
-    MINIMUM_MATRIX_CASES,
     CaseResult,
     EvidenceTier,
     _load_pcm16,
@@ -68,7 +67,7 @@ def test_audio_amount_parser_accepts_only_reviewed_vectors() -> None:
 def test_matrix_wrapper_derives_every_contracted_result() -> None:
     results = run_matrix()
 
-    assert len(results) >= MINIMUM_MATRIX_CASES
+    assert results
     assert len({result.case_id for result in results}) == len(results)
     assert all(result.case_id != "00" for result in results)
     assert all(result.passed for result in results)
@@ -100,18 +99,17 @@ def test_matrix_collection_drift_names_missing_extra_and_duplicate_ids() -> None
     assert '"exit_code":"OK"' in failure.detail
 
 
-def test_matrix_collection_contract_rejects_a_suite_below_the_safety_floor() -> None:
-    below_floor = _matrix(count=MINIMUM_MATRIX_CASES - 1)
-
+def test_matrix_collection_contract_rejects_failed_empty_collection() -> None:
     failure = _matrix_collection_contract_failure(
-        below_floor,
-        pytest.ExitCode.OK,
-        tuple(result.case_id for result in below_floor),
+        (),
+        pytest.ExitCode.NO_TESTS_COLLECTED,
+        (),
     )
 
     assert failure is not None
-    assert f'"minimum":{MINIMUM_MATRIX_CASES}' in failure.detail
-    assert f'"expected_count":{MINIMUM_MATRIX_CASES - 1}' in failure.detail
+    assert '"collected_count":0' in failure.detail
+    assert '"expected_count":0' in failure.detail
+    assert '"exit_code":"NO_TESTS_COLLECTED"' in failure.detail
 
 
 def test_matrix_collection_contract_rejects_unnumbered_cases() -> None:

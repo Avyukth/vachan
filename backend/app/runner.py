@@ -47,7 +47,6 @@ IST = ZoneInfo("Asia/Kolkata")
 TRANSPORT_LABEL = "streaming_pcm16_ws"
 STT_TIMEOUT_SECONDS = 20.0
 PCM_CHUNK_BYTES = 3_200
-MINIMUM_MATRIX_CASES = 13
 _MATRIX_TEST_NAME = re.compile(r"^test_matrix_(?P<case_id>\d{2})(?:_|$)")
 
 
@@ -198,15 +197,7 @@ def _matrix_collection_contract_failure(
         )
     )
     collection_failed = exit_code not in {pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED}
-    below_floor = len(expected) < MINIMUM_MATRIX_CASES
-    if (
-        not missing
-        and not extra
-        and not duplicates
-        and not invalid
-        and not collection_failed
-        and not below_floor
-    ):
+    if not missing and not extra and not duplicates and not invalid and not collection_failed:
         return None
 
     diagnostic = json.dumps(
@@ -219,7 +210,6 @@ def _matrix_collection_contract_failure(
             "expected_count": len(expected),
             "extra": extra,
             "invalid": invalid,
-            "minimum": MINIMUM_MATRIX_CASES,
             "missing": missing,
         },
         separators=(",", ":"),

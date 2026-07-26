@@ -1,26 +1,71 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sources": {
-    "stt": "backend/artifacts/sarvam_stt_smoke_response.json",
-    "tts": "backend/artifacts/sarvam_tts_smoke_response.json",
+    "speech_to_text_streaming": "backend/app/audio_spike.py",
+    "chat_completion": "backend/app/llm.py",
+    "text_to_speech": "backend/app/sarvam_client.py",
+    "dialogue_adapter": "backend/app/voice.py",
+    "tts_response_capture": "backend/artifacts/sarvam_tts_smoke_response.json",
     "captured_at": "2026-07-26"
   },
-  "speech_to_text": {
-    "request": {
-      "content_type": "multipart/form-data",
-      "fields": {
-        "file": "binary audio/wav",
+  "speech_to_text_streaming": {
+    "connect_request": {
+      "required_fields": [
+        "language_code",
+        "model",
+        "mode",
+        "sample_rate",
+        "input_audio_codec",
+        "high_vad_sensitivity",
+        "vad_signals",
+        "flush_signal"
+      ],
+      "optional_fields": [],
+      "value_types": {
+        "language_code": "string",
+        "model": "string",
+        "mode": "string",
+        "sample_rate": "string",
+        "input_audio_codec": "string",
+        "high_vad_sensitivity": "boolean",
+        "vad_signals": "boolean",
+        "flush_signal": "boolean"
+      },
+      "expected_values": {
+        "language_code": "hi-IN",
         "model": "saaras:v3",
         "mode": "transcribe",
-        "language_code": "hi-IN"
+        "sample_rate": "16000",
+        "input_audio_codec": "pcm_s16le",
+        "high_vad_sensitivity": true,
+        "vad_signals": true,
+        "flush_signal": true
       }
     },
-    "response": {
-      "required_keys": [
+    "chunk_request": {
+      "required_fields": [
+        "audio",
+        "encoding",
+        "sample_rate"
+      ],
+      "optional_fields": [],
+      "value_types": {
+        "audio": "string",
+        "encoding": "string",
+        "sample_rate": "integer"
+      },
+      "expected_values": {
+        "encoding": "audio/wav",
+        "sample_rate": 16000
+      }
+    },
+    "controller_test_adapter_response": {
+      "required_fields": [
         "request_id",
         "transcript",
         "language_code"
       ],
+      "optional_fields": [],
       "value_types": {
         "request_id": "string",
         "transcript": "string",
@@ -28,25 +73,121 @@
       }
     }
   },
-  "text_to_speech": {
+  "chat_completion": {
     "request": {
-      "content_type": "application/json",
-      "fields": {
-        "text": "string",
-        "target_language_code": "hi-IN",
-        "model": "bulbul:v3",
-        "speaker": "priya",
-        "speech_sample_rate": 24000
+      "required_fields": [
+        "model",
+        "messages",
+        "temperature",
+        "max_tokens"
+      ],
+      "optional_fields": [],
+      "value_types": {
+        "model": "string",
+        "messages": "array[object]",
+        "messages[].role": "string",
+        "messages[].content": "string",
+        "temperature": "number",
+        "max_tokens": "integer"
+      },
+      "expected_values": {
+        "model": "sarvam-30b",
+        "temperature": 0.1,
+        "max_tokens": 4096
       }
     },
     "response": {
-      "required_keys": [
+      "required_fields": [
+        "choices"
+      ],
+      "optional_fields": [
+        "id",
+        "object",
+        "created",
+        "model",
+        "usage",
+        "system_fingerprint"
+      ],
+      "value_types": {
+        "choices": "array[object]",
+        "choices[].message": "object",
+        "choices[].message.content": "string"
+      }
+    },
+    "dialogue_adapter_response": {
+      "required_fields": [
+        "choices"
+      ],
+      "optional_fields": [],
+      "value_types": {
+        "choices": "array[object]",
+        "choices[].message": "object",
+        "choices[].message.role": "string",
+        "choices[].message.content": "string"
+      }
+    }
+  },
+  "text_to_speech": {
+    "request": {
+      "required_fields": [
+        "text",
+        "target_language_code",
+        "model",
+        "speaker",
+        "pace",
+        "speech_sample_rate",
+        "output_audio_codec",
+        "temperature",
+        "enable_preprocessing"
+      ],
+      "optional_fields": [],
+      "value_types": {
+        "text": "string",
+        "target_language_code": "string",
+        "model": "string",
+        "speaker": "string",
+        "pace": "number",
+        "speech_sample_rate": "integer",
+        "output_audio_codec": "string",
+        "temperature": "number",
+        "enable_preprocessing": "boolean"
+      },
+      "expected_values": {
+        "target_language_code": "hi-IN",
+        "model": "bulbul:v3",
+        "speaker": "priya",
+        "pace": 1.0,
+        "speech_sample_rate": 24000,
+        "output_audio_codec": "wav",
+        "temperature": 0.6,
+        "enable_preprocessing": true
+      }
+    },
+    "response": {
+      "required_fields": [
         "request_id",
         "audios"
       ],
+      "optional_fields": [],
       "value_types": {
         "request_id": "string",
         "audios": "array[string]"
+      }
+    },
+    "dialogue_adapter_response": {
+      "required_fields": [
+        "audio_base64",
+        "content_type",
+        "request_id"
+      ],
+      "optional_fields": [],
+      "value_types": {
+        "audio_base64": "string",
+        "content_type": "string",
+        "request_id": "string|null"
+      },
+      "expected_values": {
+        "content_type": "audio/wav"
       }
     }
   }

@@ -22,6 +22,8 @@ JsonObject = dict[str, Any]
 
 STT_MODEL = "saaras:v3"
 CHAT_MODEL = "sarvam-30b"
+CHAT_TEMPERATURE = 0.1
+CHAT_MAX_TOKENS = 4_096
 TTS_MODEL = "bulbul:v3"
 
 # A minimal RIFF/WAVE header is enough to prove that tests capture audio bytes
@@ -131,27 +133,24 @@ class FakeSarvamClient:
         messages: Sequence[Mapping[str, object]],
         *,
         model: str = CHAT_MODEL,
-        temperature: float = 0.0,
+        temperature: float = CHAT_TEMPERATURE,
+        max_tokens: int = CHAT_MAX_TOKENS,
     ) -> JsonObject:
-        """Return the next scripted action in Sarvam's chat envelope."""
+        """Return the next scripted action in the production adapter envelope."""
 
         turn = self._turn(self._chat_index, "chat")
         self._chat_index += 1
         self.chat_requests.append(
             {
-                "messages": tuple(dict(message) for message in messages),
                 "model": model,
+                "messages": [dict(message) for message in messages],
                 "temperature": temperature,
+                "max_tokens": max_tokens,
             }
         )
         return {
-            "id": f"fake-chat-{self._chat_index:04d}",
-            "object": "chat.completion",
-            "created": 0,
-            "model": model,
             "choices": [
                 {
-                    "index": 0,
                     "message": {
                         "role": "assistant",
                         "content": json.dumps(
@@ -160,8 +159,7 @@ class FakeSarvamClient:
                             separators=(",", ":"),
                             sort_keys=True,
                         ),
-                    },
-                    "finish_reason": "stop",
+                    }
                 }
             ],
         }
@@ -173,9 +171,13 @@ class FakeSarvamClient:
         target_language_code: str = "hi-IN",
         model: str = TTS_MODEL,
         speaker: str = "priya",
+        pace: float = 1.0,
         sample_rate: int = 24_000,
+        output_audio_codec: str = "wav",
+        temperature: float = 0.6,
+        enable_preprocessing: bool = True,
     ) -> JsonObject:
-        """Capture the next utterance and return live-capture-shaped TTS data."""
+        """Capture one request and return the production dialogue adapter shape."""
 
         if not text.strip():
             raise ValueError("text must not be empty")
@@ -187,13 +189,18 @@ class FakeSarvamClient:
                 "target_language_code": target_language_code,
                 "model": model,
                 "speaker": speaker,
+                "pace": pace,
                 "speech_sample_rate": sample_rate,
+                "output_audio_codec": output_audio_codec,
+                "temperature": temperature,
+                "enable_preprocessing": enable_preprocessing,
             }
         )
         self.captured_audio.append(turn.tts_audio)
         return {
+            "audio_base64": base64.b64encode(turn.tts_audio).decode("ascii"),
+            "content_type": "audio/wav",
             "request_id": f"fake-tts-{self._tts_index:04d}",
-            "audios": [base64.b64encode(turn.tts_audio).decode("ascii")],
         }
 
     def assert_consumed(self) -> None:

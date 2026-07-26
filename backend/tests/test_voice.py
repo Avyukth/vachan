@@ -150,7 +150,14 @@ def test_live_binding_reaches_uncommitted_read_back_with_timing_evidence(
         await binding.on_connected()
         opening = await binding.next_client_event()
         assert opening["type"] == "agent_audio"
+        assert opening["api_version"] == "v0"
+        assert opening["source"] == "transient_media"
+        assert opening["call_id"] == binding.call_id
+        assert opening["media_seq"] == 1
         assert opening["kind"] == "opening"
+        assert opening["final_media"] is False
+        assert "transcript" not in opening
+        assert "disposition" not in opening
         assert base64.b64decode(str(opening["audio_base64"])) == SILENT_WAV
         opening_timings = opening["timings"]
         assert isinstance(opening_timings, dict)
@@ -166,12 +173,15 @@ def test_live_binding_reaches_uncommitted_read_back_with_timing_evidence(
             "चौदह सितंबर, reference 4729",
             "pandrah sau rupaye Friday ko de dunga",
         )
-        for transcript in turns:
+        for media_seq, transcript in enumerate(turns, start=2):
             await binding.on_stt_timing(binding.call_id, 35.4)
             await binding.on_final_transcript(binding.call_id, transcript)
             event = await binding.next_client_event()
             assert event["type"] == "agent_audio"
-            assert event["transcript"] == transcript
+            assert event["call_id"] == binding.call_id
+            assert event["media_seq"] == media_seq
+            assert event["final_media"] is False
+            assert "transcript" not in event
             timings = event["timings"]
             assert isinstance(timings, dict)
             assert timings["stt_ms"] == 35
@@ -198,6 +208,45 @@ def test_live_binding_reaches_uncommitted_read_back_with_timing_evidence(
     assert all("stt_ms=35;llm_ms=120;tts_ms=250;total_ms=" in row[0] for row in timing_rows)
     assert len(dialogue.chat_messages) == 3
     assert len(dialogue.spoken) == 4
+
+
+def test_terminal_turn_is_the_final_ordered_transient_media_frame(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    """The terminal response is playable once without authorizing later audio."""
+    binding, dialogue = _existing_voice_call(
+        db_connection,
+        call_id="call-live-terminal-media",
+        frozen_demo_clock=frozen_demo_clock,
+    )
+    dialogue.actions.append({"intent": "confirm"})
+
+    async def exercise() -> None:
+        await binding.on_connected()
+        opening = await binding.next_client_event()
+        assert opening["media_seq"] == 1
+
+        for transcript in (
+            "Rakesh bol raha hoon",
+            "चौदह सितंबर, reference 4729",
+            "pandrah sau rupaye Friday ko de dunga",
+            "haan",
+        ):
+            await binding.on_final_transcript(binding.call_id, transcript)
+
+        frames = [await binding.next_client_event() for _ in range(4)]
+        assert [frame["media_seq"] for frame in frames] == [2, 3, 4, 5]
+        assert [frame["final_media"] for frame in frames] == [False, False, False, True]
+        assert frames[-1]["source"] == "transient_media"
+        assert "disposition" not in frames[-1]
+        assert "transcript" not in frames[-1]
+
+    asyncio.run(exercise())
+
+    assert binding.controller.disposition is not None
+    assert binding.controller.disposition.value == "PROMISE_CONFIRMED"
+    assert not binding.is_call_active()
 
 
 def test_voice_binding_drops_stale_transcript_after_call_ends(
@@ -274,7 +323,9 @@ def test_recovery_prompt_allows_next_preconfirmation_turn(
         await binding.on_final_transcript(binding.call_id, "Rakesh bol raha hoon")
         next_turn = await binding.next_client_event()
         assert next_turn["kind"] == "turn"
-        assert next_turn["transcript"] == "Rakesh bol raha hoon"
+        assert next_turn["media_seq"] == 3
+        assert next_turn["speech_text"] == render_template(TemplateId.VERIFY_REQUEST)
+        assert "transcript" not in next_turn
 
     asyncio.run(exercise())
 
@@ -302,9 +353,10 @@ def test_unreviewed_recovery_fails_closed_before_tts(
         await binding.on_recovery_prompt(binding.call_id, "arbitrary operational prose")
 
         assert await binding.next_client_event() == {
-            "type": "call_degraded",
+            "api_version": "v0",
+            "type": "transport_error",
             "call_id": binding.call_id,
-            "reason": "backend_failure",
+            "detail": "backend_failure",
         }
 
     asyncio.run(exercise())
@@ -347,9 +399,10 @@ def test_transport_failure_before_connect_ends_call_technical(
     async def exercise() -> None:
         await binding.on_degraded(binding.call_id, "stt_network_failure")
         assert await binding.next_client_event() == {
-            "type": "call_degraded",
+            "api_version": "v0",
+            "type": "transport_error",
             "call_id": binding.call_id,
-            "reason": "stt_network_failure",
+            "detail": "stt_network_failure",
         }
 
     asyncio.run(exercise())
@@ -430,9 +483,10 @@ def test_voice_binding_attributes_llm_failure_without_relabeling_it_as_stt(
         await binding.on_final_transcript(binding.call_id, "Rakesh bol raha hoon")
         degraded = await binding.next_client_event()
         assert degraded == {
-            "type": "call_degraded",
+            "api_version": "v0",
+            "type": "transport_error",
             "call_id": binding.call_id,
-            "reason": "llm_unavailable",
+            "detail": "llm_unavailable",
         }
 
     asyncio.run(exercise())
@@ -475,9 +529,10 @@ def test_voice_binding_records_safe_llm_failure_category(
         with caplog.at_level(logging.WARNING, logger="app.voice"):
             await binding.on_final_transcript(binding.call_id, "Rakesh bol raha hoon")
         assert await binding.next_client_event() == {
-            "type": "call_degraded",
+            "api_version": "v0",
+            "type": "transport_error",
             "call_id": binding.call_id,
-            "reason": "llm_timeout",
+            "detail": "llm_timeout",
         }
 
     asyncio.run(exercise())

@@ -7,6 +7,7 @@ import base64
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.audio_spike import SAMPLE_RATE
+from app.protocol import AgentAudioFrame, MediaFrameKind
 from app.stt import (
     STT_RECOVERY_LINE,
     STT_WEBSOCKET_PATH,
@@ -134,19 +136,25 @@ class RecordingBinding(RecordingCallbacks):
 @dataclass
 class BrowserEventBinding(RecordingBinding):
     events: asyncio.Queue[dict[str, object]] = field(default_factory=asyncio.Queue)
+    media_seq: int = 0
+
+    def frame(self, kind: MediaFrameKind) -> dict[str, object]:
+        self.media_seq += 1
+        return AgentAudioFrame(
+            call_id="call-stt-001",
+            media_seq=self.media_seq,
+            ts=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+            kind=kind,
+            audio_base64="UklGRg==",
+            speech_text="सुरक्षित उत्तर।",
+        ).model_dump(mode="json")
 
     async def on_connected(self) -> None:
-        await self.events.put({"type": "agent_turn", "kind": "opening"})
+        await self.events.put(self.frame(MediaFrameKind.OPENING))
 
     async def on_final_transcript(self, call_id: str, transcript: str) -> None:
         await super().on_final_transcript(call_id, transcript)
-        await self.events.put(
-            {
-                "type": "agent_turn",
-                "kind": "turn",
-                "transcript": transcript,
-            }
-        )
+        await self.events.put(self.frame(MediaFrameKind.TURN))
 
     async def next_client_event(self) -> dict[str, object]:
         return await self.events.get()
@@ -465,13 +473,17 @@ def test_production_websocket_routes_only_final_text_to_call_binding() -> None:
     path = STT_WEBSOCKET_PATH.format(call_id="call-stt-001")
     with TestClient(app).websocket_connect(path) as websocket:
         assert websocket.receive_json() == {
+            "api_version": "v0",
             "type": "ready",
+            "call_id": "call-stt-001",
             "sample_rate": SAMPLE_RATE,
             "encoding": "pcm_s16le",
         }
         websocket.send_bytes(b"\x00")
         assert websocket.receive_json() == {
+            "api_version": "v0",
             "type": "transport_error",
+            "call_id": "call-stt-001",
             "detail": "PCM16 chunk must contain complete signed 16-bit samples",
         }
         websocket.send_bytes(b"\x01\x00")
@@ -503,15 +515,27 @@ def test_production_websocket_sends_opening_and_controller_turn_to_browser() -> 
 
     path = STT_WEBSOCKET_PATH.format(call_id="call-stt-001")
     with TestClient(app).websocket_connect(path) as websocket:
-        assert websocket.receive_json()["type"] == "ready"
-        assert websocket.receive_json() == {"type": "agent_turn", "kind": "opening"}
+        assert websocket.receive_json() == {
+            "api_version": "v0",
+            "type": "ready",
+            "call_id": "call-stt-001",
+            "sample_rate": SAMPLE_RATE,
+            "encoding": "pcm_s16le",
+        }
+        opening = websocket.receive_json()
+        assert opening["type"] == "agent_audio"
+        assert opening["source"] == "transient_media"
+        assert opening["call_id"] == "call-stt-001"
+        assert opening["media_seq"] == 1
+        assert opening["kind"] == "opening"
         websocket.send_bytes(b"\x01\x00")
         websocket.send_text('{"type":"flush"}')
-        assert websocket.receive_json() == {
-            "type": "agent_turn",
-            "kind": "turn",
-            "transcript": "Rakesh bol raha hoon",
-        }
+        turn = websocket.receive_json()
+        assert turn["type"] == "agent_audio"
+        assert turn["source"] == "transient_media"
+        assert turn["call_id"] == "call-stt-001"
+        assert turn["media_seq"] == 2
+        assert turn["kind"] == "turn"
 
     assert binding.transcripts == [("call-stt-001", "Rakesh bol raha hoon")]
     assert binding.timings
@@ -529,6 +553,8 @@ def test_production_websocket_rejects_inactive_call_before_opening_stream() -> N
     path = STT_WEBSOCKET_PATH.format(call_id="ended-call")
     with TestClient(app).websocket_connect(path) as websocket:
         assert websocket.receive_json() == {
+            "api_version": "v0",
             "type": "transport_error",
+            "call_id": "ended-call",
             "detail": "Call is not active",
         }

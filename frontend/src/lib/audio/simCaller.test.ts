@@ -1,0 +1,78 @@
+import { describe, expect, test } from 'bun:test';
+
+import { CALLER_FIXTURES, assertCallerFixture, floatToPcm16 } from './simCaller';
+import { SIM_CALLER_ENV, SIM_CALLER_LABEL, simulatedCallerEnabled } from './simCallerGate';
+
+/** Returns the thrown message, or null when nothing was thrown. */
+function thrownMessage(run: () => unknown): string | null {
+	try {
+		run();
+		return null;
+	} catch (error: unknown) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+describe('simulated-caller gate', () => {
+	test('is unavailable unless the explicit flag is set', () => {
+		expect(simulatedCallerEnabled({})).toBe(false);
+		// DEV alone must not enable it: the venue laptop runs a preview build.
+		expect(simulatedCallerEnabled({ DEV: 'true' })).toBe(false);
+		expect(simulatedCallerEnabled({ [SIM_CALLER_ENV]: '0' })).toBe(false);
+		expect(simulatedCallerEnabled({ [SIM_CALLER_ENV]: 'true' })).toBe(false);
+		expect(simulatedCallerEnabled({ [SIM_CALLER_ENV]: '1' })).toBe(true);
+	});
+
+	test('states plainly that the audio is prerecorded', () => {
+		expect(SIM_CALLER_LABEL).toContain('SIMULATED CALLER');
+		expect(SIM_CALLER_LABEL).toContain('PRERECORDED');
+	});
+});
+
+describe('agent clips are ineligible by construction', () => {
+	test('refuses any fixture that would speak as Vachan', () => {
+		expect(
+			thrownMessage(() => assertCallerFixture('/fixtures/01_agent_blind-greeting.wav'))
+		).toContain('never Vachan');
+		expect(
+			thrownMessage(() =>
+				assertCallerFixture('/demo_video/hi-IN/08_agent_dual-format-readback.wav')
+			)
+		).toContain('never Vachan');
+	});
+
+	test('accepts every catalogued caller fixture', () => {
+		for (const fixture of CALLER_FIXTURES) {
+			expect(thrownMessage(() => assertCallerFixture(fixture.url))).toBe(null);
+		}
+	});
+
+	test('ships only caller-side fixtures, each tagged with its path kind', () => {
+		expect(CALLER_FIXTURES.length).toBe(5);
+		for (const fixture of CALLER_FIXTURES) {
+			expect(fixture.url.includes('_agent_')).toBe(false);
+			expect(['HAPPY', 'NON-HAPPY', 'BLOCKER'].includes(fixture.pathKind)).toBe(true);
+		}
+	});
+});
+
+describe('floatToPcm16', () => {
+	test('maps the full range without wrapping at the extremes', () => {
+		const pcm = floatToPcm16(new Float32Array([0, 1, -1, 0.5, -0.5]));
+		expect(pcm[0]).toBe(0);
+		expect(pcm[1]).toBe(32767);
+		expect(pcm[2]).toBe(-32768);
+		expect(pcm[3]).toBe(16384);
+		expect(pcm[4]).toBe(-16384);
+	});
+
+	test('clamps out-of-range input rather than overflowing', () => {
+		const pcm = floatToPcm16(new Float32Array([9, -9]));
+		expect(pcm[0]).toBe(32767);
+		expect(pcm[1]).toBe(-32768);
+	});
+
+	test('preserves sample count so utterance duration is unchanged', () => {
+		expect(floatToPcm16(new Float32Array(1600)).length).toBe(1600);
+	});
+});

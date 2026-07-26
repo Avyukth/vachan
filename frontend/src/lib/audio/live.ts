@@ -1,3 +1,5 @@
+import { PROTOCOL_VERSION } from '$lib/protocol';
+
 export interface TurnTimings {
 	readonly stt_ms: number;
 	readonly llm_ms: number;
@@ -6,15 +8,22 @@ export interface TurnTimings {
 }
 
 export interface LiveReadyFrame {
+	readonly api_version: typeof PROTOCOL_VERSION;
 	readonly type: 'ready';
+	readonly call_id: string;
 	readonly sample_rate: number;
 	readonly encoding: 'pcm_s16le';
 }
 
 export interface LiveAgentAudioFrame {
+	readonly api_version: typeof PROTOCOL_VERSION;
 	readonly type: 'agent_audio';
-	readonly kind: string;
+	readonly source: 'transient_media';
 	readonly call_id: string;
+	readonly media_seq: number;
+	readonly ts: string;
+	readonly kind: 'opening' | 'turn' | 'recovery';
+	readonly final_media: boolean;
 	readonly audio_base64: string;
 	readonly content_type: 'audio/wav';
 	readonly speech_text: string;
@@ -22,28 +31,56 @@ export interface LiveAgentAudioFrame {
 }
 
 export interface LiveTransportErrorFrame {
+	readonly api_version: typeof PROTOCOL_VERSION;
 	readonly type: 'transport_error';
+	readonly call_id: string;
 	readonly detail: string;
 }
 
 export type LiveVoiceFrame = LiveReadyFrame | LiveAgentAudioFrame | LiveTransportErrorFrame;
 
+export interface LiveVoiceFramePolicy {
+	readonly expectedCallId: string;
+	readonly afterMediaSeq?: number;
+	readonly acceptAudio?: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isNonNegativeFinite(value: unknown): value is number {
-	return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+function isNonNegativeInteger(value: unknown): value is number {
+	return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+	return Number.isInteger(value) && (value as number) > 0;
+}
+
+function isTimezoneAwareTimestamp(value: unknown): value is string {
+	return (
+		typeof value === 'string' &&
+		/(?:Z|[+-]\d{2}:\d{2})$/u.test(value) &&
+		!Number.isNaN(Date.parse(value))
+	);
+}
+
+function isExpectedCall(value: unknown, policy: LiveVoiceFramePolicy): value is string {
+	return (
+		typeof value === 'string' &&
+		value.trim().length > 0 &&
+		value === policy.expectedCallId
+	);
 }
 
 function parseTimings(value: unknown): TurnTimings | null {
 	if (!isRecord(value)) return null;
 	const { stt_ms, llm_ms, tts_ms, total_ms } = value;
 	if (
-		!isNonNegativeFinite(stt_ms) ||
-		!isNonNegativeFinite(llm_ms) ||
-		!isNonNegativeFinite(tts_ms) ||
-		!isNonNegativeFinite(total_ms) ||
+		!isNonNegativeInteger(stt_ms) ||
+		!isNonNegativeInteger(llm_ms) ||
+		!isNonNegativeInteger(tts_ms) ||
+		!isNonNegativeInteger(total_ms) ||
 		total_ms < stt_ms + llm_ms + tts_ms
 	) {
 		return null;
@@ -51,17 +88,28 @@ function parseTimings(value: unknown): TurnTimings | null {
 	return { stt_ms, llm_ms, tts_ms, total_ms };
 }
 
-export function parseLiveVoiceFrame(value: unknown): LiveVoiceFrame | null {
-	if (!isRecord(value)) return null;
+export function parseLiveVoiceFrame(
+	value: unknown,
+	policy: LiveVoiceFramePolicy
+): LiveVoiceFrame | null {
+	if (
+		!isRecord(value) ||
+		value.api_version !== PROTOCOL_VERSION ||
+		!policy.expectedCallId.trim() ||
+		!isExpectedCall(value.call_id, policy)
+	) {
+		return null;
+	}
 
 	if (
 		value.type === 'ready' &&
-		isNonNegativeFinite(value.sample_rate) &&
-		value.sample_rate > 0 &&
+		isPositiveInteger(value.sample_rate) &&
 		value.encoding === 'pcm_s16le'
 	) {
 		return {
+			api_version: PROTOCOL_VERSION,
 			type: 'ready',
+			call_id: value.call_id,
 			sample_rate: value.sample_rate,
 			encoding: value.encoding
 		};
@@ -72,13 +120,23 @@ export function parseLiveVoiceFrame(value: unknown): LiveVoiceFrame | null {
 		typeof value.detail === 'string' &&
 		value.detail.trim().length > 0
 	) {
-		return { type: 'transport_error', detail: value.detail };
+		return {
+			api_version: PROTOCOL_VERSION,
+			type: 'transport_error',
+			call_id: value.call_id,
+			detail: value.detail
+		};
 	}
 
 	if (
-		(value.type !== 'agent_audio' && value.type !== 'agent_turn') ||
-		typeof value.call_id !== 'string' ||
-		value.call_id.trim().length === 0 ||
+		value.type !== 'agent_audio' ||
+		value.source !== 'transient_media' ||
+		policy.acceptAudio === false ||
+		!isPositiveInteger(value.media_seq) ||
+		value.media_seq <= (policy.afterMediaSeq ?? 0) ||
+		!isTimezoneAwareTimestamp(value.ts) ||
+		(value.kind !== 'opening' && value.kind !== 'turn' && value.kind !== 'recovery') ||
+		typeof value.final_media !== 'boolean' ||
 		typeof value.audio_base64 !== 'string' ||
 		value.audio_base64.length === 0 ||
 		value.content_type !== 'audio/wav' ||
@@ -90,9 +148,14 @@ export function parseLiveVoiceFrame(value: unknown): LiveVoiceFrame | null {
 	const timings = value.timings === undefined ? null : parseTimings(value.timings);
 	if (value.timings !== undefined && timings === null) return null;
 	return {
+		api_version: PROTOCOL_VERSION,
 		type: 'agent_audio',
-		kind: typeof value.kind === 'string' && value.kind ? value.kind : 'turn',
+		source: 'transient_media',
 		call_id: value.call_id,
+		media_seq: value.media_seq,
+		ts: value.ts,
+		kind: value.kind,
+		final_media: value.final_media,
 		audio_base64: value.audio_base64,
 		content_type: value.content_type,
 		speech_text: value.speech_text,

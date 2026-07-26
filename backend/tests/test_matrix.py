@@ -577,9 +577,10 @@ def test_matrix_11_stt_failure_ends_technical_without_business_rows(
     diagnostics = _call_diagnostics(db_connection, call_id)
     assert outcome is SttOutcome.DEGRADED, diagnostics
     assert browser_event == {
-        "type": "call_degraded",
+        "api_version": "v0",
+        "type": "transport_error",
         "call_id": call_id,
-        "reason": "stt_network_failure",
+        "detail": "stt_network_failure",
     }, diagnostics
     assert controller.disposition is Disposition.ENDED_TECHNICAL, diagnostics
     assert diagnostics["promise_candidates"] == 0, diagnostics

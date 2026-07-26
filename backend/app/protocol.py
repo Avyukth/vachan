@@ -9,7 +9,16 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, StringConstraints
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    TypeAdapter,
+    model_validator,
+)
 
 PROTOCOL_VERSION = "v0"
 ProtocolVersion = Literal["v0"]
@@ -49,6 +58,72 @@ class TransportMode(StrEnum):
 
     STREAMING_PCM16_WS = "streaming_pcm16_ws"
     TURN_BASED_REST = "turn_based_rest"
+
+
+class MediaFrameKind(StrEnum):
+    """The only transient agent-audio origins exposed to the browser."""
+
+    OPENING = "opening"
+    TURN = "turn"
+    RECOVERY = "recovery"
+
+
+class TurnTimings(BaseModel):
+    """Non-negative stage timings attached to a measured media frame."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stt_ms: int = Field(ge=0)
+    llm_ms: int = Field(ge=0)
+    tts_ms: int = Field(ge=0)
+    total_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> "TurnTimings":
+        """Reject internally impossible latency summaries."""
+        if self.total_ms < self.stt_ms + self.llm_ms + self.tts_ms:
+            raise ValueError("total_ms must cover every measured media stage")
+        return self
+
+
+class VoiceReadyFrame(ProtocolModel):
+    """Call-correlated acknowledgement for the live PCM16 socket."""
+
+    type: Literal["ready"] = "ready"
+    call_id: Identifier
+    sample_rate: int = Field(gt=0)
+    encoding: Literal["pcm_s16le"] = "pcm_s16le"
+
+
+class AgentAudioFrame(ProtocolModel):
+    """Transient guarded audio, explicitly distinct from durable evidence."""
+
+    type: Literal["agent_audio"] = "agent_audio"
+    source: Literal["transient_media"] = "transient_media"
+    call_id: Identifier
+    media_seq: int = Field(gt=0)
+    ts: AwareDatetime
+    kind: MediaFrameKind
+    final_media: bool = False
+    audio_base64: Identifier
+    content_type: Literal["audio/wav"] = "audio/wav"
+    speech_text: Identifier
+    timings: TurnTimings | None = None
+
+
+class VoiceTransportErrorFrame(ProtocolModel):
+    """Safe call-correlated transport failure sent before socket closure."""
+
+    type: Literal["transport_error"] = "transport_error"
+    call_id: Identifier
+    detail: Reason
+
+
+VoiceServerFrame = Annotated[
+    VoiceReadyFrame | AgentAudioFrame | VoiceTransportErrorFrame,
+    Field(discriminator="type"),
+]
+VOICE_SERVER_FRAME_ADAPTER = TypeAdapter(VoiceServerFrame)
 
 
 class CaseSummary(ProtocolModel):

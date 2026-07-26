@@ -19,7 +19,13 @@ from app.llm import (
     LLMUnavailable,
     SarvamChatClient,
 )
-from app.protocol import TransportMode
+from app.protocol import (
+    AgentAudioFrame,
+    MediaFrameKind,
+    TransportMode,
+    TurnTimings,
+    VoiceTransportErrorFrame,
+)
 from app.sarvam_client import SarvamTextToSpeechClient, SarvamTextToSpeechError
 from app.seeds import DEMO_CASES
 from app.states import CallState
@@ -115,6 +121,7 @@ class VoiceCallBinding:
         self._connected = False
         self._agent_enabled = True
         self._stt_ms = 0.0
+        self._media_seq = 0
 
     def is_call_active(self) -> bool:
         row = self.controller.ledger.connection.execute(
@@ -169,7 +176,7 @@ class VoiceCallBinding:
             await self._events.put(
                 self._browser_turn(
                     opening,
-                    kind="opening",
+                    kind=MediaFrameKind.OPENING,
                     stt_ms=0.0,
                     llm_ms=0.0,
                     tts_ms=tts_ms,
@@ -230,7 +237,7 @@ class VoiceCallBinding:
             )
             event = self._browser_turn(
                 turn,
-                kind="turn",
+                kind=MediaFrameKind.TURN,
                 stt_ms=self._stt_ms,
                 llm_ms=llm_ms,
                 tts_ms=tts_ms,
@@ -260,7 +267,7 @@ class VoiceCallBinding:
             await self._events.put(
                 self._browser_turn(
                     turn,
-                    kind="recovery",
+                    kind=MediaFrameKind.RECOVERY,
                     stt_ms=0.0,
                     llm_ms=0.0,
                     tts_ms=tts_ms,
@@ -298,11 +305,10 @@ class VoiceCallBinding:
             self._connected = True
         await self.controller.technical_failure(reason_code)
         await self._events.put(
-            {
-                "type": "call_degraded",
-                "call_id": self.call_id,
-                "reason": reason_code,
-            }
+            VoiceTransportErrorFrame(
+                call_id=self.call_id,
+                detail=reason_code,
+            ).model_dump(mode="json")
         )
 
     async def _record_timing(
@@ -333,7 +339,7 @@ class VoiceCallBinding:
         self,
         turn: ControllerTurn,
         *,
-        kind: str,
+        kind: MediaFrameKind,
         stt_ms: float,
         llm_ms: float,
         tts_ms: float,
@@ -346,22 +352,28 @@ class VoiceCallBinding:
         if not isinstance(content_type, str) or content_type != "audio/wav":
             raise ValueError("controller TTS response must be WAV audio")
         total_ms = max(total_ms, stt_ms + llm_ms + tts_ms)
-        return {
-            "type": "agent_audio",
-            "kind": kind,
-            "call_id": self.call_id,
-            "transcript": turn.transcript,
-            "speech_text": turn.speech_text,
-            "audio_base64": encoded_audio,
-            "content_type": content_type,
-            "disposition": None if turn.disposition is None else turn.disposition.value,
-            "timings": {
-                "stt_ms": round(stt_ms),
-                "llm_ms": round(llm_ms),
-                "tts_ms": round(tts_ms),
-                "total_ms": round(total_ms),
-            },
-        }
+        rounded_stages = (
+            round(stt_ms),
+            round(llm_ms),
+            round(tts_ms),
+        )
+        self._media_seq += 1
+        return AgentAudioFrame(
+            call_id=self.call_id,
+            media_seq=self._media_seq,
+            ts=datetime.now(UTC),
+            kind=kind,
+            final_media=turn.disposition is not None,
+            speech_text=turn.speech_text,
+            audio_base64=encoded_audio,
+            content_type=content_type,
+            timings=TurnTimings(
+                stt_ms=rounded_stages[0],
+                llm_ms=rounded_stages[1],
+                tts_ms=rounded_stages[2],
+                total_ms=max(round(total_ms), sum(rounded_stages)),
+            ),
+        ).model_dump(mode="json")
 
 
 class ProductionBreakGlassTakeover(BreakGlassTakeover):

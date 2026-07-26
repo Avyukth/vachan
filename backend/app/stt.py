@@ -20,6 +20,13 @@ from app.audio_spike import (
     open_sarvam_stream,
     response_payload,
 )
+from app.protocol import (
+    VOICE_SERVER_FRAME_ADAPTER,
+    AgentAudioFrame,
+    VoiceReadyFrame,
+    VoiceServerFrame,
+    VoiceTransportErrorFrame,
+)
 from app.templates import TemplateId, render_template
 
 STT_REQUEST_TIMEOUT_SECONDS = 8.0
@@ -74,7 +81,7 @@ class SttClientEventSource(Protocol):
     async def on_connected(self) -> None:
         """Activate the call and enqueue its blind greeting."""
 
-    async def next_client_event(self) -> dict[str, object]:
+    async def next_client_event(self) -> VoiceServerFrame:
         """Wait for the next safe controller-owned browser event."""
 
 
@@ -488,7 +495,12 @@ async def _receive_browser_audio(
             try:
                 result = await session.send_pcm(chunk)
             except ValueError as error:
-                await websocket.send_json({"type": "transport_error", "detail": str(error)})
+                await websocket.send_json(
+                    VoiceTransportErrorFrame(
+                        call_id=session.call_id,
+                        detail=str(error),
+                    ).model_dump(mode="json")
+                )
                 continue
             if result.outcome in {SttOutcome.DEGRADED, SttOutcome.DROPPED}:
                 return
@@ -501,12 +513,18 @@ async def _receive_browser_audio(
             control = json.loads(text)
         except json.JSONDecodeError:
             await websocket.send_json(
-                {"type": "transport_error", "detail": "Invalid control message"}
+                VoiceTransportErrorFrame(
+                    call_id=session.call_id,
+                    detail="Invalid control message",
+                ).model_dump(mode="json")
             )
             continue
         if control != {"type": "flush"}:
             await websocket.send_json(
-                {"type": "transport_error", "detail": "Unsupported control message"}
+                VoiceTransportErrorFrame(
+                    call_id=session.call_id,
+                    detail="Unsupported control message",
+                ).model_dump(mode="json")
             )
             continue
 
@@ -527,8 +545,22 @@ async def _relay_call_stream(
     if next_client_event is not None:
 
         async def send_controller_events() -> None:
+            last_media_seq = 0
             while session.active:
-                await websocket.send_json(await next_client_event())
+                raw_frame = await next_client_event()
+                frame = VOICE_SERVER_FRAME_ADAPTER.validate_python(raw_frame)
+                if frame.call_id != session.call_id:
+                    raise ValueError("voice frame call ID does not match the active stream")
+                is_final_media = isinstance(frame, AgentAudioFrame) and frame.final_media
+                if not session.active or (not binding.is_call_active() and not is_final_media):
+                    return
+                if isinstance(frame, AgentAudioFrame):
+                    if frame.media_seq <= last_media_seq:
+                        continue
+                    last_media_seq = frame.media_seq
+                await websocket.send_json(frame.model_dump(mode="json"))
+                if is_final_media:
+                    return
 
         tasks.add(asyncio.create_task(send_controller_events()))
     done, pending = await asyncio.wait(
@@ -555,14 +587,22 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
     )
     if not api_key or binding_factory is None:
         await websocket.send_json(
-            {"type": "transport_error", "detail": "Speech controller is unavailable"}
+            VoiceTransportErrorFrame(
+                call_id=call_id,
+                detail="Speech controller is unavailable",
+            ).model_dump(mode="json")
         )
         await websocket.close(code=1011)
         return
 
     binding = binding_factory(call_id)
     if not binding.is_call_active():
-        await websocket.send_json({"type": "transport_error", "detail": "Call is not active"})
+        await websocket.send_json(
+            VoiceTransportErrorFrame(
+                call_id=call_id,
+                detail="Call is not active",
+            ).model_dump(mode="json")
+        )
         await websocket.close(code=1008)
         return
 
@@ -583,11 +623,10 @@ async def stt_websocket(websocket: WebSocket, call_id: str) -> None:
             )
             registry.register(session)
             await websocket.send_json(
-                {
-                    "type": "ready",
-                    "sample_rate": SAMPLE_RATE,
-                    "encoding": "pcm_s16le",
-                }
+                VoiceReadyFrame(
+                    call_id=call_id,
+                    sample_rate=SAMPLE_RATE,
+                ).model_dump(mode="json")
             )
             on_connected = getattr(binding, "on_connected", None)
             if on_connected is not None:

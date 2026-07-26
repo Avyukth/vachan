@@ -27,6 +27,7 @@ from app.llm import MAX_RESPONSE_TOKENS, SarvamChatClient
 from app.sarvam_client import SarvamTextToSpeechClient
 from app.seeds import DEMO_TIME_ANCHOR, RAKESH_CASE
 from app.states import CallState, IdentityState, PromiseState
+from app.stt import StreamingSttSession, SttOutcome
 from tests.fakes import FakeSarvamClient, FrozenDemoClock, SarvamScenario
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -74,10 +75,14 @@ def _matches_type(value: object, expected: str) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "number|null":
+        return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
     if expected == "boolean":
         return isinstance(value, bool)
     if expected == "object":
         return isinstance(value, Mapping)
+    if expected == "object|null":
+        return value is None or isinstance(value, Mapping)
     if expected == "array[object]":
         return (
             isinstance(value, list)
@@ -91,7 +96,11 @@ def _matches_type(value: object, expected: str) -> bool:
     raise AssertionError(f"unsupported frozen shape type={expected!r}")
 
 
-def _assert_shape(payload: Mapping[str, object], contract: ShapeContract, label: str) -> None:
+def _assert_field_set(
+    payload: Mapping[str, object],
+    contract: ShapeContract,
+    label: str,
+) -> None:
     required = set(contract["required_fields"])
     optional = set(contract["optional_fields"])
     actual = set(payload)
@@ -99,6 +108,49 @@ def _assert_shape(payload: Mapping[str, object], contract: ShapeContract, label:
     unexpected = sorted(actual - required - optional)
     assert not missing, f"{label}: missing required fields={missing}"
     assert not unexpected, f"{label}: undocumented fields={unexpected}"
+
+
+def _optional_values_at_path(payload: object, path: str) -> list[object]:
+    values = [payload]
+    for raw_segment in path.split("."):
+        is_array = raw_segment.endswith("[]")
+        segment = raw_segment[:-2] if is_array else raw_segment
+        next_values: list[object] = []
+        for value in values:
+            if not isinstance(value, Mapping):
+                raise AssertionError(
+                    f"wrong value type path={path!r}: expected object, got {type(value).__name__}"
+                )
+            if segment not in value:
+                return []
+            nested = value[segment]
+            if is_array:
+                if not isinstance(nested, list):
+                    raise AssertionError(
+                        f"wrong value type path={path!r}: expected array, "
+                        f"got {type(nested).__name__}"
+                    )
+                next_values.extend(nested)
+            else:
+                next_values.append(nested)
+        values = next_values
+    return values
+
+
+def _assert_shape(payload: Mapping[str, object], contract: ShapeContract, label: str) -> None:
+    _assert_field_set(payload, contract, label)
+
+    nested_fields = contract.get("nested_fields", {})
+    assert isinstance(nested_fields, Mapping)
+    for path, field_contract in nested_fields.items():
+        assert isinstance(path, str)
+        assert isinstance(field_contract, Mapping)
+        for value in _values_at_path(payload, path):
+            assert isinstance(value, Mapping), (
+                f"{label}: wrong value type path={path!r}; "
+                f"expected=object, got={type(value).__name__}"
+            )
+            _assert_field_set(value, field_contract, f"{label}.{path}")
 
     value_types = contract["value_types"]
     assert isinstance(value_types, Mapping)
@@ -109,6 +161,27 @@ def _assert_shape(payload: Mapping[str, object], contract: ShapeContract, label:
             assert _matches_type(value, expected), (
                 f"{label}: wrong value type path={path!r}; "
                 f"expected={expected}, got={type(value).__name__}"
+            )
+
+    optional_value_types = contract.get("optional_value_types", {})
+    assert isinstance(optional_value_types, Mapping)
+    for path, expected in optional_value_types.items():
+        assert isinstance(path, str)
+        assert isinstance(expected, str)
+        for value in _optional_values_at_path(payload, path):
+            assert _matches_type(value, expected), (
+                f"{label}: wrong optional value type path={path!r}; "
+                f"expected={expected}, got={type(value).__name__}"
+            )
+
+    allowed_values = contract.get("allowed_values", {})
+    assert isinstance(allowed_values, Mapping)
+    for path, allowed in allowed_values.items():
+        assert isinstance(path, str)
+        assert isinstance(allowed, list)
+        for value in _values_at_path(payload, path):
+            assert value in allowed, (
+                f"{label}: unsupported value path={path!r}; allowed={allowed!r}, got={value!r}"
             )
 
     expected_values = contract.get("expected_values", {})
@@ -124,9 +197,35 @@ def _assert_shape(payload: Mapping[str, object], contract: ShapeContract, label:
 class _CapturedStream:
     def __init__(self) -> None:
         self.chunk_request: JsonObject | None = None
+        self.responses: asyncio.Queue[JsonObject] = asyncio.Queue()
 
     async def transcribe(self, **kwargs: object) -> None:
         self.chunk_request = dict(kwargs)
+
+    async def flush(self) -> None:
+        return None
+
+    def __aiter__(self) -> _CapturedStream:
+        return self
+
+    async def __anext__(self) -> JsonObject:
+        return await self.responses.get()
+
+
+class _CapturedSttCallbacks:
+    def __init__(self) -> None:
+        self.transcripts: list[tuple[str, str]] = []
+        self.recoveries: list[tuple[str, str]] = []
+        self.degradations: list[tuple[str, str]] = []
+
+    async def on_final_transcript(self, call_id: str, transcript: str) -> None:
+        self.transcripts.append((call_id, transcript))
+
+    async def on_recovery_prompt(self, call_id: str, line: str) -> None:
+        self.recoveries.append((call_id, line))
+
+    async def on_degraded(self, call_id: str, reason_code: str) -> None:
+        self.degradations.append((call_id, reason_code))
 
 
 class _CapturedStreamContext:
@@ -301,6 +400,55 @@ def test_production_requests_and_responses_match_frozen_sarvam_shapes(
     )
 
 
+def test_production_stt_consumer_matches_frozen_external_response_shapes() -> None:
+    shapes = json.loads(SHAPES_PATH.read_text())
+    transcript_response = shapes["speech_to_text_streaming"]["external_transcript_response"][
+        "capture"
+    ]
+    start_response = shapes["speech_to_text_streaming"]["external_vad_response"]["capture"]
+    end_response = json.loads(json.dumps(start_response))
+    end_response["data"]["signal_type"] = "END_SPEECH"
+
+    _assert_shape(
+        transcript_response,
+        shapes["speech_to_text_streaming"]["external_transcript_response"],
+        "production STT transcript response",
+    )
+    for signal_response in (start_response, end_response):
+        _assert_shape(
+            signal_response,
+            shapes["speech_to_text_streaming"]["external_vad_response"],
+            "production STT VAD response",
+        )
+
+    async def exercise() -> None:
+        stream = _CapturedStream()
+        callbacks = _CapturedSttCallbacks()
+        session = StreamingSttSession(
+            call_id="call-stt-boundary-001",
+            stream=stream,
+            callbacks=callbacks,
+            is_call_active=lambda: True,
+            timeout_seconds=1.0,
+        )
+        reader = asyncio.create_task(session.run_finalized_results())
+        await stream.responses.put(start_response)
+        await stream.responses.put(end_response)
+        await stream.responses.put(transcript_response)
+        for _ in range(20):
+            if callbacks.transcripts:
+                break
+            await asyncio.sleep(0)
+
+        assert callbacks.transcripts == [("call-stt-boundary-001", "synthetic boundary probe")]
+        assert callbacks.recoveries == []
+        assert callbacks.degradations == []
+        session.cancel()
+        assert (await reader).outcome is SttOutcome.DROPPED
+
+    asyncio.run(exercise())
+
+
 def test_fake_envelopes_match_production_dialogue_adapter_shapes(
     fake_sarvam_factory,
     correct_verification_scenario: SarvamScenario,
@@ -371,6 +519,59 @@ def test_shape_failures_name_the_drifted_field(mutation: str, diagnostic: str) -
             shapes["text_to_speech"]["request"],
             "mutated TTS request",
         )
+
+
+@pytest.mark.parametrize(
+    ("response_name", "path", "replacement", "diagnostic"),
+    [
+        (
+            "external_transcript_response",
+            "data.transcript",
+            None,
+            "production STT transcript response.data: missing required fields=['transcript']",
+        ),
+        (
+            "external_transcript_response",
+            "data.transcript",
+            7,
+            "wrong value type path='data.transcript'",
+        ),
+        (
+            "external_vad_response",
+            "data.signal_type",
+            None,
+            "production STT VAD response.data: missing required fields=['signal_type']",
+        ),
+        (
+            "external_vad_response",
+            "data.signal_type",
+            7,
+            "wrong value type path='data.signal_type'",
+        ),
+    ],
+)
+def test_nested_stt_response_drift_names_the_required_field(
+    response_name: str,
+    path: str,
+    replacement: object,
+    diagnostic: str,
+) -> None:
+    shapes = json.loads(SHAPES_PATH.read_text())
+    contract = shapes["speech_to_text_streaming"][response_name]
+    payload = json.loads(json.dumps(contract["capture"]))
+    parent_name, field_name = path.split(".")
+    if replacement is None:
+        del payload[parent_name][field_name]
+    else:
+        payload[parent_name][field_name] = replacement
+
+    label = (
+        "production STT transcript response"
+        if response_name == "external_transcript_response"
+        else "production STT VAD response"
+    )
+    with pytest.raises(AssertionError, match=re.escape(diagnostic)):
+        _assert_shape(payload, contract, label)
 
 
 def test_correct_verification_scenario_runs_through_scripted_network_boundary(

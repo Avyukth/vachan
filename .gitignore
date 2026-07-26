@@ -73,3 +73,6 @@ Thumbs.db
 
 # Beads compliance audit dir (managed by /beads-compliance-and-completion-verification skill)
 /beads_compliance_audit/
+
+# simulated-caller fixtures are copied from backend/tests/fixtures at setup
+frontend/static/fixtures/

@@ -2,6 +2,7 @@
   "schema_version": 2,
   "sources": {
     "speech_to_text_streaming": "backend/app/audio_spike.py",
+    "speech_to_text_streaming_responses": "sarvamai==0.1.28 generated response models consumed by backend/app/stt.py",
     "chat_completion": "backend/app/llm.py",
     "text_to_speech": "backend/app/sarvam_client.py",
     "dialogue_adapter": "backend/app/voice.py",
@@ -57,6 +58,112 @@
       "expected_values": {
         "encoding": "audio/wav",
         "sample_rate": 16000
+      }
+    },
+    "external_transcript_response": {
+      "required_fields": [
+        "type",
+        "data"
+      ],
+      "optional_fields": [],
+      "nested_fields": {
+        "data": {
+          "required_fields": [
+            "request_id",
+            "transcript",
+            "metrics"
+          ],
+          "optional_fields": [
+            "timestamps",
+            "diarized_transcript",
+            "language_code",
+            "language_probability"
+          ]
+        },
+        "data.metrics": {
+          "required_fields": [
+            "audio_duration",
+            "processing_latency"
+          ],
+          "optional_fields": []
+        }
+      },
+      "value_types": {
+        "type": "string",
+        "data": "object",
+        "data.request_id": "string",
+        "data.transcript": "string",
+        "data.metrics": "object",
+        "data.metrics.audio_duration": "number",
+        "data.metrics.processing_latency": "number"
+      },
+      "optional_value_types": {
+        "data.timestamps": "object|null",
+        "data.diarized_transcript": "object|null",
+        "data.language_code": "string|null",
+        "data.language_probability": "number|null"
+      },
+      "expected_values": {
+        "type": "data"
+      },
+      "capture": {
+        "type": "data",
+        "data": {
+          "request_id": "synthetic-stt-boundary-001",
+          "transcript": "synthetic boundary probe",
+          "timestamps": null,
+          "diarized_transcript": null,
+          "language_code": "hi-IN",
+          "language_probability": null,
+          "metrics": {
+            "audio_duration": 0.8,
+            "processing_latency": 0.1
+          }
+        }
+      }
+    },
+    "external_vad_response": {
+      "required_fields": [
+        "type",
+        "data"
+      ],
+      "optional_fields": [],
+      "nested_fields": {
+        "data": {
+          "required_fields": [
+            "signal_type"
+          ],
+          "optional_fields": [
+            "event_type",
+            "timestamp",
+            "occured_at"
+          ]
+        }
+      },
+      "value_types": {
+        "type": "string",
+        "data": "object",
+        "data.signal_type": "string"
+      },
+      "optional_value_types": {
+        "data.event_type": "string|null",
+        "data.timestamp": "string|null",
+        "data.occured_at": "number|null"
+      },
+      "allowed_values": {
+        "data.signal_type": [
+          "START_SPEECH",
+          "END_SPEECH"
+        ]
+      },
+      "expected_values": {
+        "type": "events"
+      },
+      "capture": {
+        "type": "events",
+        "data": {
+          "signal_type": "START_SPEECH"
+        }
       }
     },
     "controller_test_adapter_response": {

@@ -7,14 +7,20 @@ from pydantic import ValidationError
 
 from app.protocol import (
     PROTOCOL_VERSION,
+    VOICE_SERVER_FRAME_ADAPTER,
+    AgentAudioFrame,
     CasesResponse,
     CaseSummary,
     EventType,
     EvidenceResponse,
+    MediaFrameKind,
     PreflightCheck,
     PreflightResponse,
     PreflightResult,
     ServerEvent,
+    TurnTimings,
+    VoiceReadyFrame,
+    VoiceTransportErrorFrame,
 )
 
 
@@ -120,3 +126,68 @@ def test_evidence_events_are_ordered_unique_and_call_scoped() -> None:
         EvidenceResponse(call_id="call-1", events=(event(seq=2), event(seq=1)))
     with pytest.raises(ValidationError, match="requested call"):
         EvidenceResponse(call_id="call-1", events=(event(call_id="call-2"),))
+
+
+def test_live_voice_frames_are_versioned_call_scoped_and_discriminated() -> None:
+    """Transient media has an explicit contract and cannot pose as ledger evidence."""
+    timestamp = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+    frames = (
+        VoiceReadyFrame(call_id="call-1", sample_rate=16_000),
+        AgentAudioFrame(
+            call_id="call-1",
+            media_seq=1,
+            ts=timestamp,
+            kind=MediaFrameKind.OPENING,
+            final_media=False,
+            audio_base64="UklGRg==",
+            speech_text="सुरक्षित शुरुआत।",
+            timings=TurnTimings(stt_ms=0, llm_ms=0, tts_ms=250, total_ms=250),
+        ),
+        VoiceTransportErrorFrame(call_id="call-1", detail="Speech controller is unavailable"),
+    )
+
+    for frame in frames:
+        body = frame.model_dump(mode="json")
+        assert body["api_version"] == PROTOCOL_VERSION
+        assert body["call_id"] == "call-1"
+        assert VOICE_SERVER_FRAME_ADAPTER.validate_python(body) == frame
+    assert frames[1].model_dump(mode="json")["source"] == "transient_media"
+    assert "seq" not in frames[1].model_dump(mode="json")
+
+
+def test_live_audio_contract_rejects_legacy_and_impossible_frames() -> None:
+    """Legacy side-protocol aliases and dishonest timing fail closed."""
+    timestamp = datetime(2026, 7, 26, 12, 0, tzinfo=UTC).isoformat()
+    valid = {
+        "api_version": PROTOCOL_VERSION,
+        "type": "agent_audio",
+        "source": "transient_media",
+        "call_id": "call-1",
+        "media_seq": 1,
+        "ts": timestamp,
+        "kind": "turn",
+        "final_media": False,
+        "audio_base64": "UklGRg==",
+        "content_type": "audio/wav",
+        "speech_text": "सुरक्षित उत्तर।",
+        "timings": {"stt_ms": 100, "llm_ms": 200, "tts_ms": 300, "total_ms": 600},
+    }
+
+    for field, invalid in (
+        ("api_version", "v1"),
+        ("type", "agent_turn"),
+        ("source", "persisted_ledger"),
+        ("call_id", ""),
+        ("media_seq", 0),
+        ("ts", "2026-07-26T12:00:00"),
+    ):
+        body = {**valid, field: invalid}
+        with pytest.raises(ValidationError):
+            VOICE_SERVER_FRAME_ADAPTER.validate_python(body)
+
+    impossible = {
+        **valid,
+        "timings": {"stt_ms": 100, "llm_ms": 200, "tts_ms": 300, "total_ms": 599},
+    }
+    with pytest.raises(ValidationError, match="cover every measured media stage"):
+        VOICE_SERVER_FRAME_ADAPTER.validate_python(impossible)

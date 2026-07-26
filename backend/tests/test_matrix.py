@@ -3,21 +3,87 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import sqlite3
+from collections.abc import AsyncIterator, Mapping, Sequence
+from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.contracts import Disposition, LedgerEventType
 from app.controller import DialogueController
-from app.db import EvidenceLedger
+from app.db import EvidenceLedger, migrate_schema
 from app.guard import SAFE_OUTPUT_LINE
-from app.preflight import PreflightInputs, evaluate_preflight
-from app.protocol import PreflightResult
-from app.seeds import RAKESH_CASE
-from app.states import IdentityState, PromiseState
+from app.preflight import AUDIO_OUTPUT_HEADER, MICROPHONE_HEADER
+from app.preflight import router as preflight_router
+from app.protocol import PROTOCOL_VERSION, PreflightResult, TransportMode
+from app.seeds import RAKESH_CASE, reset_and_reseed_demo_cases
+from app.states import CallState, IdentityState, PromiseState
+from app.stt import StreamingSttSession, SttOutcome
+from app.takeover import TaskCancellationGroup
 from app.templates import TemplateId, render_template
 from app.tools import ToolPermissionDenied
-from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
+from app.voice import ProductionBreakGlassTakeover, VoiceCallBinding
+from tests.fakes import SILENT_WAV, FakeSarvamClient, SarvamScenario, ScriptedTurn
+
+JsonObject = dict[str, Any]
+
+
+class _FailingSttStream:
+    """Production-protocol stream double that fails at the network send boundary."""
+
+    async def transcribe(self, audio: str, **kwargs: object) -> None:
+        raise OSError("simulated Saaras disconnect")
+
+    async def flush(self) -> None:
+        raise AssertionError("send failure must degrade before flush")
+
+    def __aiter__(self) -> AsyncIterator[dict[str, object]]:
+        return self
+
+    async def __anext__(self) -> dict[str, object]:
+        raise AssertionError("send failure must degrade before receiving")
+
+
+class _BlockingVoiceDialogue:
+    """Live-shaped dialogue client whose LLM remains in flight until released."""
+
+    def __init__(self) -> None:
+        self.llm_started = asyncio.Event()
+        self.release_llm = asyncio.Event()
+        self.spoken: list[str] = []
+        self.last_llm_ms = 120.0
+        self.last_tts_ms = 250.0
+
+    async def transcribe(self, audio: bytes, **kwargs: object) -> JsonObject:
+        raise AssertionError("streaming voice must not invoke turn-based STT")
+
+    async def chat_completion(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        **kwargs: object,
+    ) -> JsonObject:
+        self.llm_started.set()
+        await self.release_llm.wait()
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"intent": "borrower_present"}),
+                    }
+                }
+            ]
+        }
+
+    async def synthesize(self, text: str, **kwargs: object) -> JsonObject:
+        self.spoken.append(text)
+        return {
+            "audio_base64": base64.b64encode(SILENT_WAV).decode("ascii"),
+            "content_type": "audio/wav",
+        }
 
 
 def _scenario(name: str, *turns: tuple[str, dict[str, object]]) -> SarvamScenario:
@@ -41,6 +107,61 @@ def _controller(
         clock=frozen_demo_clock.now,
     )
     return controller, fake
+
+
+def _insert_voice_call(
+    connection: sqlite3.Connection,
+    *,
+    call_id: str,
+    started: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO calls (id, case_id, started, transport)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            call_id,
+            RAKESH_CASE.case_id,
+            started,
+            TransportMode.STREAMING_PCM16_WS.value,
+        ),
+    )
+
+
+def _call_diagnostics(
+    connection: sqlite3.Connection,
+    call_id: str,
+) -> dict[str, object]:
+    call = connection.execute(
+        """
+        SELECT disposition, operator_intervened
+        FROM calls WHERE id = ?
+        """,
+        (call_id,),
+    ).fetchone()
+    events = [
+        (row["seq"], row["type"], row["redacted_reason"])
+        for row in connection.execute(
+            """
+            SELECT seq, type, redacted_reason
+            FROM events WHERE call_id = ? ORDER BY seq
+            """,
+            (call_id,),
+        )
+    ]
+    return {
+        "call": None if call is None else dict(call),
+        "events": events,
+        "promise_candidates": connection.execute(
+            "SELECT COUNT(*) FROM promise_candidates WHERE call_id = ?",
+            (call_id,),
+        ).fetchone()[0],
+        "promises": connection.execute(
+            "SELECT COUNT(*) FROM promises WHERE call_id = ?",
+            (call_id,),
+        ).fetchone()[0],
+    }
 
 
 async def _verify(controller: DialogueController) -> None:
@@ -392,77 +513,171 @@ def test_matrix_11_stt_failure_ends_technical_without_business_rows(
     frozen_demo_clock,
     assert_single_disposition,
 ) -> None:
-    controller, _ = _controller(
+    call_id = "call-matrix-11"
+    dialogue = _BlockingVoiceDialogue()
+    _insert_voice_call(
         db_connection,
-        _scenario("11", ("unused", {"intent": "other"})),
-        frozen_demo_clock,
+        call_id=call_id,
+        started=frozen_demo_clock.now().isoformat(),
+    )
+    controller = DialogueController(
+        call_id=call_id,
+        case=RAKESH_CASE,
+        ledger=EvidenceLedger(db_connection),
+        sarvam=dialogue,
+        clock=frozen_demo_clock.now,
+        transport=TransportMode.STREAMING_PCM16_WS.value,
+    )
+    binding = VoiceCallBinding(
+        controller=controller,
+        dialogue_client=dialogue,  # type: ignore[arg-type]
+    )
+    session = StreamingSttSession(
+        call_id=call_id,
+        stream=_FailingSttStream(),  # type: ignore[arg-type]
+        callbacks=binding,
+        is_call_active=binding.is_call_active,
     )
 
-    async def exercise() -> None:
-        await controller.start()
-        await controller.technical_failure("stt")
+    async def exercise() -> tuple[SttOutcome, dict[str, object]]:
+        result = await session.send_pcm(b"\x00\x00" * 160)
+        return result.outcome, await binding.next_client_event()
 
-    asyncio.run(exercise())
-    assert controller.disposition is Disposition.ENDED_TECHNICAL
-    assert (
-        db_connection.execute(
-            "SELECT COUNT(*) FROM promises WHERE call_id = ?",
-            (controller.call_id,),
-        ).fetchone()[0]
-        == 0
-    )
-    assert LedgerEventType.TECHNICAL_FAILURE.value in controller.event_types()
-    assert_single_disposition(controller.call_id)
+    outcome, browser_event = asyncio.run(exercise())
+    diagnostics = _call_diagnostics(db_connection, call_id)
+    assert outcome is SttOutcome.DEGRADED, diagnostics
+    assert browser_event == {
+        "type": "call_degraded",
+        "call_id": call_id,
+        "reason": "stt_network_failure",
+    }, diagnostics
+    assert controller.disposition is Disposition.ENDED_TECHNICAL, diagnostics
+    assert diagnostics["promise_candidates"] == 0, diagnostics
+    assert diagnostics["promises"] == 0, diagnostics
+    event_types = [event[1] for event in diagnostics["events"]]  # type: ignore[index]
+    assert event_types.count(LedgerEventType.TECHNICAL_FAILURE.value) == 1, diagnostics
+    assert event_types.count(LedgerEventType.DISPOSITION_SET.value) == 1, diagnostics
+    assert_single_disposition(call_id)
+    assert dialogue.spoken == [], diagnostics
 
 
 def test_matrix_12_takeover_cancels_pending_work_and_never_speaks(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,
 ) -> None:
-    controller, fake = _controller(
+    call_id = "call-matrix-12"
+    dialogue = _BlockingVoiceDialogue()
+    _insert_voice_call(
         db_connection,
-        _scenario("12", ("unused", {"intent": "other"})),
-        frozen_demo_clock,
+        call_id=call_id,
+        started=frozen_demo_clock.now().isoformat(),
     )
-
-    async def exercise() -> bool:
-        await controller.start()
-        pending = asyncio.create_task(asyncio.Event().wait())
-        await controller.takeover(pending)
-        return pending.cancelled()
-
-    assert asyncio.run(exercise()) is True
-    assert controller.disposition is Disposition.ENDED_OPERATOR
-    assert fake.tts_requests == []
-    events = controller.event_types()
-    assert events.index(LedgerEventType.OPERATOR_TAKEOVER.value) < events.index(
-        LedgerEventType.DISPOSITION_SET.value
+    controller = DialogueController(
+        call_id=call_id,
+        case=RAKESH_CASE,
+        ledger=EvidenceLedger(db_connection),
+        sarvam=dialogue,
+        clock=frozen_demo_clock.now,
+        transport=TransportMode.STREAMING_PCM16_WS.value,
     )
+    binding = VoiceCallBinding(
+        controller=controller,
+        dialogue_client=dialogue,  # type: ignore[arg-type]
+    )
+    cancellation = TaskCancellationGroup()
+    timeline: list[str] = []
+
+    def revoke() -> None:
+        timeline.append("revoke")
+        binding.revoke_agent()
+
+    def cancel() -> tuple[str, ...]:
+        timeline.append("cancel")
+        return cancellation.cancel_all()
+
+    def stop() -> None:
+        timeline.append("stop")
+        binding.stop_generated_speech()
+
+    takeover = ProductionBreakGlassTakeover(
+        state=controller.coordinator,
+        event_writer=controller.ledger,
+        end_writer=controller.ledger,
+        revoke_tools=revoke,
+        cancel_pending_work=cancel,
+        stop_generated_speech=stop,
+        clock=frozen_demo_clock.now,
+    )
+    takeover.attach_binding(binding)
+
+    async def exercise() -> tuple[str, ...]:
+        await binding.on_connected()
+        await binding.next_client_event()
+        dialogue.spoken.clear()
+        pending = asyncio.create_task(binding.on_final_transcript(call_id, "Rakesh bol raha hoon"))
+        cancellation.register("llm", pending)
+        await dialogue.llm_started.wait()
+
+        result = await takeover.takeover()
+        dialogue.release_llm.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        return result.cancelled_work
+
+    cancelled = asyncio.run(exercise())
+    diagnostics = _call_diagnostics(db_connection, call_id)
+    assert timeline == ["revoke", "cancel", "stop"], diagnostics
+    assert cancelled == ("llm",), diagnostics
+    assert controller.snapshot.call is CallState.OPERATOR_TAKEOVER, diagnostics
+    assert not takeover.agent_enabled, diagnostics
+    assert dialogue.spoken == [], diagnostics
+    event_types = [event[1] for event in diagnostics["events"]]  # type: ignore[index]
+    assert event_types.count(LedgerEventType.OPERATOR_TAKEOVER.value) == 1, diagnostics
+    assert LedgerEventType.DISPOSITION_SET.value not in event_types, diagnostics
 
 
-def test_matrix_13_contact_cap_blocks_before_call_row(
-    db_connection: sqlite3.Connection,
-) -> None:
-    response = evaluate_preflight(
-        PreflightInputs(
-            microphone_permission=True,
-            audio_output_confirmed=True,
-            backend_healthy=True,
-            sarvam_configured=True,
-            case_eligible=True,
-            contact_cap_remaining=0,
-            active_session_exists=False,
+def test_matrix_13_contact_cap_blocks_real_start_before_call_row() -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    migrate_schema(connection)
+    ledger = EvidenceLedger(connection)
+    reset_and_reseed_demo_cases(ledger)
+    application = FastAPI()
+    application.state.evidence_ledger = ledger
+    application.state.sarvam_api_key = "test-only-non-secret"
+    application.state.call_session_registrar = lambda call_id: None
+    application.include_router(preflight_router)
+
+    with TestClient(application) as client:
+        preflight = client.post(
+            "/api/preflight",
+            json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},
+            headers={
+                MICROPHONE_HEADER: "granted",
+                AUDIO_OUTPUT_HEADER: "confirmed",
+            },
         )
-    )
+        denied_start = client.post(
+            "/api/call/start",
+            json={"api_version": PROTOCOL_VERSION, "case_id": "case-capped-001"},
+        )
 
-    assert response.result is PreflightResult.BLOCKED_POLICY
-    assert next(check for check in response.checks if check.name == "contact_cap").passed is False
-    assert (
-        db_connection.execute(
-            "SELECT COUNT(*) FROM calls WHERE case_id = 'case-capped-001'"
-        ).fetchone()[0]
-        == 0
+    diagnostics = {
+        "preflight_status": preflight.status_code,
+        "preflight": preflight.json(),
+        "start_status": denied_start.status_code,
+        "start": denied_start.json(),
+        "call_rows": connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0],
+    }
+    assert preflight.status_code == 200, diagnostics
+    assert preflight.json()["result"] == PreflightResult.BLOCKED_POLICY, diagnostics
+    contact_cap = next(
+        check for check in preflight.json()["checks"] if check["name"] == "contact_cap"
     )
+    assert contact_cap["pass"] is False, diagnostics
+    assert denied_start.status_code == 409, diagnostics
+    assert diagnostics["call_rows"] == 0, diagnostics
+    connection.close()
 
 
 def test_matrix_14_preconfirmation_classifier_uses_only_reviewed_templates(

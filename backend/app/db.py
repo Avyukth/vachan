@@ -22,6 +22,7 @@ from app.contracts import Disposition, LedgerEventType, StateSnapshot
 
 if TYPE_CHECKING:
     from app.seeds import MockCaseSeed
+    from app.tools import ToolDecision
 
 SCHEMA_VERSION = 1
 DEMO_MOCK_LABEL = "DEMO / MOCK DATA"
@@ -208,6 +209,43 @@ def _snapshot_json(snapshot: StateSnapshot) -> str:
     )
 
 
+def _next_event_sequence(connection: sqlite3.Connection, call_id: str) -> int:
+    row = connection.execute(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE call_id = ?",
+        (call_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _insert_event_row(
+    connection: sqlite3.Connection,
+    *,
+    call_id: str,
+    seq: int,
+    ts: datetime,
+    event_type: str,
+    state_before: StateSnapshot,
+    state_after: StateSnapshot,
+    redacted_reason: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO events (
+            call_id, seq, ts, type, state_before, state_after, redacted_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            call_id,
+            seq,
+            _iso_timestamp(ts),
+            event_type,
+            _snapshot_json(state_before),
+            _snapshot_json(state_after),
+            redacted_reason,
+        ),
+    )
+
+
 @contextmanager
 def _immediate_transaction(connection: sqlite3.Connection) -> Iterator[None]:
     connection.execute("BEGIN IMMEDIATE")
@@ -255,25 +293,74 @@ class EvidenceLedger:
 
         async with self._write_lock:
             with _immediate_transaction(self.connection):
-                row = self.connection.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE call_id = ?",
-                    (call_id,),
-                ).fetchone()
-                seq = int(row[0])
+                seq = _next_event_sequence(self.connection, call_id)
+                _insert_event_row(
+                    self.connection,
+                    call_id=call_id,
+                    seq=seq,
+                    ts=ts,
+                    event_type=event_name,
+                    state_before=state_before,
+                    state_after=state_after,
+                    redacted_reason=redacted_reason,
+                )
+        return seq
+
+    async def append_tool_decision(
+        self,
+        *,
+        call_id: str,
+        ts: datetime,
+        decision: ToolDecision,
+        state: StateSnapshot,
+    ) -> int:
+        """Atomically append one decision event and its typed detail row."""
+
+        expected_states = (
+            state.call.value,
+            state.identity.value,
+            state.promise.value,
+        )
+        decision_states = (
+            decision.call_state,
+            decision.identity_state,
+            decision.promise_state,
+        )
+        if decision_states != expected_states:
+            raise ValueError("tool decision states must match the authoritative snapshot")
+
+        redacted_reason = (
+            f"tool_allowed:{decision.tool.value}"
+            if decision.allowed
+            else f"tool_denied:{decision.tool.value}"
+        )
+        async with self._write_lock:
+            with _immediate_transaction(self.connection):
+                seq = _next_event_sequence(self.connection, call_id)
+                _insert_event_row(
+                    self.connection,
+                    call_id=call_id,
+                    seq=seq,
+                    ts=ts,
+                    event_type=LedgerEventType.TOOL_DECISION.value,
+                    state_before=state,
+                    state_after=state,
+                    redacted_reason=redacted_reason,
+                )
                 self.connection.execute(
                     """
-                    INSERT INTO events (
-                        call_id, seq, ts, type, state_before, state_after, redacted_reason
+                    INSERT INTO tool_decisions (
+                        call_id, seq, tool, allowed, identity_state, promise_state, reason
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         call_id,
                         seq,
-                        _iso_timestamp(ts),
-                        event_name,
-                        _snapshot_json(state_before),
-                        _snapshot_json(state_after),
-                        redacted_reason,
+                        decision.tool.value,
+                        decision.allowed,
+                        decision.identity_state,
+                        decision.promise_state,
+                        decision.reason,
                     ),
                 )
         return seq

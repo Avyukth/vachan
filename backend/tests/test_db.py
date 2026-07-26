@@ -16,6 +16,7 @@ from app.db import (
 )
 from app.seeds import DEMO_CASES, DEMO_TIME_ANCHOR, reset_and_reseed_demo_cases
 from app.states import CallState, IdentityState, PromiseState
+from app.tools import PermissionContext, ToolName, evaluate_tool_permission
 
 NOW = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
 EXPECTED_TABLES = {
@@ -286,6 +287,56 @@ def test_concurrent_event_writes_have_no_gaps_or_duplicates(
         ("call-001",),
     ).fetchall()
     assert [row["seq"] for row in rows] == list(range(1, 21))
+
+
+def test_tool_decision_and_event_are_inserted_atomically(
+    connection: sqlite3.Connection,
+    ledger: EvidenceLedger,
+) -> None:
+    seed_cases(ledger)
+    start_call(connection)
+    snapshot = state_snapshot()
+    decision = evaluate_tool_permission(
+        ToolName.READ_MOCK_ACCOUNT,
+        PermissionContext(
+            call_state=snapshot.call,
+            identity_state=snapshot.identity,
+            promise_state=snapshot.promise,
+        ),
+    )
+
+    seq = asyncio.run(
+        ledger.append_tool_decision(
+            call_id="call-001",
+            ts=NOW,
+            decision=decision,
+            state=snapshot,
+        )
+    )
+
+    event = connection.execute(
+        "SELECT type, redacted_reason FROM events WHERE call_id = ? AND seq = ?",
+        ("call-001", seq),
+    ).fetchone()
+    detail = connection.execute(
+        """
+        SELECT tool, allowed, identity_state, promise_state, reason
+        FROM tool_decisions
+        WHERE call_id = ? AND seq = ?
+        """,
+        ("call-001", seq),
+    ).fetchone()
+    assert dict(event) == {
+        "type": LedgerEventType.TOOL_DECISION.value,
+        "redacted_reason": "tool_allowed:read_mock_account",
+    }
+    assert dict(detail) == {
+        "tool": "read_mock_account",
+        "allowed": 1,
+        "identity_state": "CONFIRMED",
+        "promise_state": "NONE",
+        "reason": "allowed",
+    }
 
 
 def test_demo_reset_is_scoped_and_refused_during_active_call(

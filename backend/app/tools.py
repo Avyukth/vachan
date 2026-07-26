@@ -219,3 +219,19 @@ def authorize_tool(
     if not decision.allowed:
         raise ToolPermissionDenied(decision)
     return decision
+
+
+def execute_authorized_tool[ResultT](
+    tool: ToolName,
+    context: PermissionContext,
+    record_decision: DecisionRecorder,
+    operation: Callable[[], ResultT],
+) -> ResultT:
+    """Run a synchronous low-level effect only after its decision is recorded.
+
+    Runtime controller code should prefer ``GatedToolExecutor``, which derives
+    state from the coordinator, persists atomically, and rechecks after await.
+    This pure helper remains useful for isolated adapters and unit tests.
+    """
+    authorize_tool(tool, context, record_decision)
+    return operation()

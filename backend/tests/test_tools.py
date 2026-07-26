@@ -12,6 +12,7 @@ from app.tools import (
     ToolPermissionDenied,
     authorize_tool,
     evaluate_tool_permission,
+    execute_authorized_tool,
 )
 
 
@@ -148,3 +149,34 @@ def test_denied_decision_contains_only_redacted_authorization_facts() -> None:
 
     assert decision.reason == ("condition_failed=positive_amount; condition_failed=allowed_date")
     assert "-10" not in decision.reason
+
+
+def test_low_level_denied_execution_records_before_zero_side_effects() -> None:
+    decisions: list[ToolDecision] = []
+    mutations: list[str] = []
+
+    with pytest.raises(ToolPermissionDenied):
+        execute_authorized_tool(
+            ToolName.READ_MOCK_ACCOUNT,
+            context(identity_state="UNVERIFIED"),
+            decisions.append,
+            lambda: mutations.append("private account read"),
+        )
+
+    assert len(decisions) == 1
+    assert decisions[0].allowed is False
+    assert mutations == []
+
+
+def test_low_level_allowed_execution_records_before_operation() -> None:
+    timeline: list[str] = []
+
+    result = execute_authorized_tool(
+        ToolName.READ_MOCK_ACCOUNT,
+        context(),
+        lambda decision: timeline.append(f"decision:{decision.allowed}"),
+        lambda: (timeline.append("operation"), "account")[1],
+    )
+
+    assert result == "account"
+    assert timeline == ["decision:True", "operation"]

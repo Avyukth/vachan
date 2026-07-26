@@ -89,6 +89,10 @@ class InvalidModelEnvelope(ValueError):
     """The model response did not contain one typed JSON action."""
 
 
+class _DuplicateDisposition(RuntimeError):
+    """Internal rollback signal for an already-persisted identical outcome."""
+
+
 def _action_payload(response: Mapping[str, object]) -> dict[str, object]:
     """Extract one OpenAI-compatible chat payload without trusting its fields."""
 
@@ -150,6 +154,7 @@ class DialogueController:
         self.callback_payloads: list[dict[str, str]] = []
         self.history: tuple[PromptMessage, ...] = ()
         self._started = False
+        self._disposition_lock = asyncio.Lock()
         self._coordinator = StateMachineCoordinator(
             call_id=call_id,
             event_writer=ledger,
@@ -270,45 +275,121 @@ class DialogueController:
         disposition: Disposition,
         *,
         reason_code: str,
-    ) -> None:
-        if self.disposition is not None:
-            if self.disposition is disposition:
-                return
-            raise ControllerClosedError("call already has a different disposition")
+        evidence_reason: str | None = None,
+    ) -> tuple[int, datetime]:
+        async with self._disposition_lock:
+            persisted = self.ledger.connection.execute(
+                "SELECT ended, disposition FROM calls WHERE id = ?",
+                (self.call_id,),
+            ).fetchone()
+            if persisted is None:
+                raise LookupError("call does not exist")
+            if persisted["disposition"] is not None:
+                stored = Disposition(str(persisted["disposition"]))
+                self.disposition = stored
+                if stored is not disposition:
+                    raise ControllerClosedError("call already has a different disposition")
+                event = self.ledger.connection.execute(
+                    """
+                    SELECT seq
+                    FROM events
+                    WHERE call_id = ? AND type = ?
+                    ORDER BY seq DESC
+                    LIMIT 1
+                    """,
+                    (self.call_id, LedgerEventType.DISPOSITION_SET.value),
+                ).fetchone()
+                if event is None or persisted["ended"] is None:
+                    raise RuntimeError("terminal call is missing disposition evidence")
+                return int(event["seq"]), datetime.fromisoformat(str(persisted["ended"]))
 
-        if self.snapshot.call is CallState.ACTIVE:
-            target = (
-                CallState.COMPLETED
-                if disposition in {Disposition.PROMISE_CONFIRMED, Disposition.CALLBACK_THIRD_PARTY}
-                else CallState.ENDED
-            )
-            await self._coordinator.transition(target, reason_code=reason_code)
-        elif self.snapshot.call in {CallState.DEGRADED, CallState.OPERATOR_TAKEOVER}:
-            await self._coordinator.transition(CallState.ENDED, reason_code=reason_code)
+            if self.disposition is not None:
+                if self.disposition is disposition:
+                    raise RuntimeError("in-memory disposition is missing durable evidence")
+                raise ControllerClosedError("call already has a different disposition")
 
-        snapshot = self.snapshot
-        await self.ledger.append_event(
-            call_id=self.call_id,
-            ts=self.clock(),
-            event_type=LedgerEventType.DISPOSITION_SET,
-            state_before=snapshot,
-            state_after=snapshot,
-            redacted_reason=reason_code,
-        )
-        self.ledger.connection.execute(
-            """
-            UPDATE calls
-            SET ended = ?, disposition = ?, operator_intervened = ?
-            WHERE id = ? AND disposition IS NULL
-            """,
-            (
-                self.clock().isoformat(),
-                disposition.value,
-                int(disposition is Disposition.ENDED_OPERATOR),
-                self.call_id,
-            ),
-        )
-        self.disposition = disposition
+            if self.snapshot.call is CallState.ACTIVE:
+                target = (
+                    CallState.COMPLETED
+                    if disposition
+                    in {Disposition.PROMISE_CONFIRMED, Disposition.CALLBACK_THIRD_PARTY}
+                    else CallState.ENDED
+                )
+                await self._coordinator.transition(target, reason_code=reason_code)
+            elif self.snapshot.call in {CallState.DEGRADED, CallState.OPERATOR_TAKEOVER}:
+                await self._coordinator.transition(CallState.ENDED, reason_code=reason_code)
+
+            timestamp = self.clock()
+            snapshot = self.snapshot
+
+            def persist_terminal_call() -> None:
+                call = self.ledger.connection.execute(
+                    "SELECT disposition FROM calls WHERE id = ?",
+                    (self.call_id,),
+                ).fetchone()
+                if call is None:
+                    raise LookupError("call does not exist")
+                if call["disposition"] is not None:
+                    stored = Disposition(str(call["disposition"]))
+                    if stored is disposition:
+                        raise _DuplicateDisposition
+                    raise ControllerClosedError("call already has a different disposition")
+                updated = self.ledger.connection.execute(
+                    """
+                    UPDATE calls
+                    SET ended = ?, disposition = ?, operator_intervened = ?
+                    WHERE id = ? AND disposition IS NULL
+                    """,
+                    (
+                        timestamp.isoformat(),
+                        disposition.value,
+                        int(disposition is Disposition.ENDED_OPERATOR),
+                        self.call_id,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("terminal disposition lost its active-call race")
+
+            try:
+                _, seq = self.ledger.mutate_with_event(
+                    call_id=self.call_id,
+                    ts=timestamp,
+                    event_type=LedgerEventType.DISPOSITION_SET,
+                    state_before=snapshot,
+                    state_after=snapshot,
+                    redacted_reason=evidence_reason or reason_code,
+                    mutation=persist_terminal_call,
+                )
+            except _DuplicateDisposition:
+                event = self.ledger.connection.execute(
+                    """
+                    SELECT seq
+                    FROM events
+                    WHERE call_id = ? AND type = ?
+                    ORDER BY seq DESC
+                    LIMIT 1
+                    """,
+                    (self.call_id, LedgerEventType.DISPOSITION_SET.value),
+                ).fetchone()
+                ended = self.ledger.connection.execute(
+                    "SELECT ended FROM calls WHERE id = ?",
+                    (self.call_id,),
+                ).fetchone()
+                if event is None or ended is None or ended["ended"] is None:
+                    raise RuntimeError("terminal call is missing disposition evidence") from None
+                self.disposition = disposition
+                return int(event["seq"]), datetime.fromisoformat(str(ended["ended"]))
+            except ControllerClosedError:
+                winner = self.ledger.connection.execute(
+                    "SELECT disposition FROM calls WHERE id = ?",
+                    (self.call_id,),
+                ).fetchone()
+                if winner is not None and winner["disposition"] is not None:
+                    self.disposition = Disposition(str(winner["disposition"]))
+                raise
+
+            self.disposition = disposition
+            return seq, timestamp
 
     async def _submit_verification(self, transcript: str) -> tuple[str, Disposition | None]:
         result = await self._tools.execute(
@@ -667,24 +748,19 @@ class DialogueController:
         normalized_reason = reason.strip()
         if not normalized_reason:
             raise ValueError("operator end reason must not be empty")
-        if self.disposition is not None:
+        if self.disposition not in {None, Disposition.ENDED_OPERATOR}:
             raise ControllerClosedError("terminal call cannot be ended again")
-        if self.snapshot.call not in {CallState.ACTIVE, CallState.DEGRADED}:
+        if self.disposition is None and self.snapshot.call not in {
+            CallState.ACTIVE,
+            CallState.DEGRADED,
+        }:
             raise ControllerClosedError("call is not active")
 
-        await self._coordinator.transition(
-            CallState.ENDED,
+        return await self._set_disposition(
+            Disposition.ENDED_OPERATOR,
             reason_code="operator_ended_normal_call",
+            evidence_reason=f"operator_end:{normalized_reason}",
         )
-        timestamp = self.clock()
-        seq = await self.ledger.set_ended_operator(
-            call_id=self.call_id,
-            ts=timestamp,
-            reason=normalized_reason,
-            state=self.snapshot,
-        )
-        self.disposition = Disposition.ENDED_OPERATOR
-        return seq, timestamp
 
     async def duplicate_affirmative(self) -> None:
         """Replay one duplicate affirmative against the idempotent engine."""

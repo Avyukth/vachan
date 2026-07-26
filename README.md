@@ -209,7 +209,7 @@ acceptance criteria and test vectors. See `AGENTS.md` for the full operating man
 
 ```bash
 # Quality gates
-cd backend  && uv run ruff check . && uv run pytest -x -q     # 13-case matrix must be green
+cd backend  && uv run ruff check . && uv run ruff format --check . && uv run pytest -x -q
 cd frontend && bun run check
 
 # Evidence runner (tier-3, regenerated before any demo)
@@ -219,7 +219,7 @@ cd backend && uv run python -m app.runner
 | Test tier | What | Where |
 |---|---|---|
 | 1 Unit | State machines, normalization (lakh/hazaar → paise, "shukravaar" → ISO), guard vectors | pure functions, no fixtures |
-| 2 Integration | 13-case matrix through real controller + tools + guard + SQLite, FakeSarvamClient | offline, <30s |
+| 2 Integration | Every collected matrix scenario through real controller + tools + guard + SQLite, FakeSarvamClient | offline, <30s |
 | 3 Evidence | Runner: real Saaras STT on three labeled prerecorded `synthetic-hi-IN` WAVs, then code-owned controller boundaries; not a real human/live call | <2 min artifact |
 
 Formal human/live rehearsals are a separate, still-pending gate in `sarvam-ztt`; they are not

@@ -1,5 +1,5 @@
 === VACHAN EVIDENCE RUN ===
-ts: 2026-07-26T15:12:42.409130+05:30  transport: streaming_pcm16_ws  build: 6dbf992-dirty
+ts: 2026-07-26T15:24:49.093353+05:30  transport: streaming_pcm16_ws  build: 16e5198-dirty
 matrix (offline): 14/14
 audio e2e (real STT): 3/3
 01  01-correct-verification-unlocks-account    PASS  input: typed-script

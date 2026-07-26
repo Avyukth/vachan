@@ -117,3 +117,18 @@ def test_readme_distinguishes_synthetic_stt_from_pending_live_proof() -> None:
     assert re.search(r"\(\d+\s+beads\b", markdown, re.IGNORECASE) is None, (
         "README hard-codes a bead count; direct readers to br stats instead"
     )
+
+
+def test_readme_does_not_hard_code_the_collected_matrix_size() -> None:
+    markdown = ROOT_README.read_text(encoding="utf-8")
+    stale_claims = {
+        "numbered matrix label": r"\b\d+-case matrix\b",
+        "numbered offline-case claim": r"\b\d+\s+offline\b",
+    }
+
+    for claim, pattern in stale_claims.items():
+        assert re.search(pattern, markdown, re.IGNORECASE) is None, (
+            f"README hard-codes a {claim}; describe collection-derived coverage instead"
+        )
+
+    assert "Every collected matrix scenario" in markdown

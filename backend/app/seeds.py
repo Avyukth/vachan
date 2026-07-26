@@ -81,7 +81,7 @@ RAKESH_CASE = MockCaseSeed(
     eligible=True,
     # Demo-day headroom: rehearsal (sarvam-ztt) runs the happy path 3x consecutively and
     # judges may ask for repeat runs. A low cap would refuse the eligible case mid-demo and
-    # look like a bug rather than the deliberate refusal we stage on case-capped-001.
+    # look like a bug rather than the deliberate refusal we stage on case-capped-002.
     contact_cap_remaining=40,
     verification=VerificationSeed(
         birth_day=14,

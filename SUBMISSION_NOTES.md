@@ -80,6 +80,9 @@ final artifact:
 - Cut `context.py` and `memory.py` experiments are not production-wired and are not counted as
   shipped coverage. Their isolated or intentionally skipped tests do not prove the active
   `context_isolation.py` boundary.
+- The committed audio-generator source is regression-tested, but generated multilingual/demo
+  WAVs are not checked-in evidence. Regenerate and review them from the frozen build before using
+  them in a demo or describing them as current evidence.
 
 ## Current implementation limitations
 
@@ -133,7 +136,7 @@ Do not submit until each item has an owner and an explicit result:
       complete without a post-terminal caller turn.
 - [x] `d1e5f0c` closed `sarvam-ztf` and `sarvam-h31`: both audio generators use the terminal-safe
       order, their source regression passes, and literal repository-wide backend Ruff/format plus
-      the full test suite are green; no generated WAV was committed.
+      the full test suite are green; no generated WAV was committed or counted as current evidence.
 - [ ] Replay screens remain visibly labeled `REPLAY`; no replay event is described as live.
 - [ ] A human completes the `sarvam-r9i` venue checks: production preview on port 3000, persistent
       “Allow on every visit” mic permission for that exact origin, wired headphones, pre-approved

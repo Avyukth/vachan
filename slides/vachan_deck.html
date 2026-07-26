@@ -96,20 +96,24 @@
   .u-line{font-size:1.22cqw;line-height:1.4;color:var(--steel)}
   .u-line b{color:var(--bone)}
 
-  /* S3 layers */
-  .layers{flex:1;display:grid;grid-template-columns:1.15fr .85fr;gap:1.5cqw;
-    margin-top:1.4cqw;min-height:0}
-  .layerlist{display:flex;flex-direction:column;gap:.8cqw;min-height:0}
-  .layer{border-left:.35cqw solid var(--green);padding:.85cqw 1.4cqw;flex:1;min-height:0}
-  .layer .n{font-family:var(--mono);font-size:.92cqw;color:var(--green);letter-spacing:.2em}
-  .layer .t{font-size:1.38cqw;font-weight:600;margin-top:.2cqw}
-  .layer .d{font-size:1.1cqw;color:var(--steel);margin-top:.25cqw;line-height:1.35}
-  .machines{padding:1.5cqw 1.7cqw;display:flex;flex-direction:column;gap:1.2cqw}
-  .machines h3{font-family:var(--mono);font-size:1.05cqw;letter-spacing:.24em;
+  /* S3 layers — 2x2 grid, generous slack */
+  .layers2{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+    gap:1.3cqw;margin-top:1.8cqw;min-height:0}
+  .layer{border-left:.35cqw solid var(--green);padding:1.5cqw 1.9cqw;display:flex;
+    flex-direction:column;justify-content:center;gap:.5cqw;min-height:0}
+  .layer .n{font-family:var(--mono);font-size:1.05cqw;color:var(--green);letter-spacing:.2em}
+  .layer .t{font-size:1.85cqw;font-weight:600}
+  .layer .d{font-size:1.3cqw;color:var(--steel);line-height:1.42}
+  /* S4 machines — three columns */
+  .m3{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.4cqw;
+    margin-top:1.8cqw;min-height:0}
+  .m3 .box{padding:1.6cqw 1.8cqw;display:flex;flex-direction:column;gap:1cqw;min-height:0}
+  .m3 h3{font-family:var(--mono);font-size:1.08cqw;letter-spacing:.24em;
     color:var(--steel);text-transform:uppercase}
-  .sm{font-family:var(--mono);font-size:1.12cqw;line-height:2;color:var(--steel)}
+  .sm{font-family:var(--mono);font-size:1.22cqw;line-height:2;color:var(--steel)}
   .sm b{color:var(--bone);font-weight:600}
   .sm .g{color:var(--green)} .sm .r{color:var(--rust)} .sm .a{color:var(--amber)}
+  .m3 .dispo{margin-top:auto}
 
   /* S4 flow strip */
   .flow{flex:1;display:grid;grid-template-columns:repeat(6,1fr);gap:1cqw;
@@ -248,38 +252,65 @@
     <div class="kicker rise">One architectural decision</div>
     <h2 class="rise">Code — not the model — decides when private data
       and write-tools unlock.</h2>
-    <div class="layers">
-      <div class="layerlist rise">
-        <div class="layer panel"><span class="n">LAYER 1</span>
-          <div class="t">Context isolation</div>
-          <div class="d">Account data enters the LLM only at CONFIRMED —
-            the model cannot leak what it was never given.</div></div>
-        <div class="layer panel"><span class="n">LAYER 2</span>
-          <div class="t">Tool isolation</div>
-          <div class="d">read_account / commit_promise throw unless CONFIRMED.
-            Every denial is a ledger row.</div></div>
-        <div class="layer panel"><span class="n">LAYER 3</span>
-          <div class="t">Fixed templates before verification</div>
-          <div class="d">The LLM selects the reply; it never writes it.</div></div>
-        <div class="layer panel"><span class="n">LAYER 4</span>
-          <div class="t">Output guard before every utterance</div>
-          <div class="d">Multilingual blocklist. On fire: discard draft, speak a safe line,
-            log OUTPUT_BLOCKED.</div></div>
-      </div>
-      <div class="machines panel rise">
-        <div><h3>Identity — in code</h3>
-          <div class="sm">UNVERIFIED → VERIFYING → <b class="g">CONFIRMED</b><br>
-          any turn → <b class="r">THIRD_PARTY</b> · handover → relock<br>
-          re-verify allowed · never restored across calls</div></div>
-        <div><h3>Promise — event-sourced</h3>
-          <div class="sm">CANDIDATE → READ_BACK → <b class="a">COMMITTED</b><br>
-          dual-format echo · explicit yes · idempotent</div></div>
-        <div><h3>Every transition</h3>
-          <div class="sm">→ append-only <b>evidence ledger</b></div></div>
-      </div>
+    <div class="layers2 rise">
+      <div class="layer panel"><span class="n">LAYER 1</span>
+        <div class="t">Context isolation</div>
+        <div class="d">Account data enters the LLM only at CONFIRMED —
+          the model cannot leak what it was never given.</div></div>
+      <div class="layer panel"><span class="n">LAYER 2</span>
+        <div class="t">Tool isolation</div>
+        <div class="d">read_account / commit_promise throw unless CONFIRMED.
+          Every denial is a ledger row.</div></div>
+      <div class="layer panel"><span class="n">LAYER 3</span>
+        <div class="t">Fixed templates before verification</div>
+        <div class="d">The LLM selects the reply; it never writes it.</div></div>
+      <div class="layer panel"><span class="n">LAYER 4</span>
+        <div class="t">Output guard before every utterance</div>
+        <div class="d">Multilingual blocklist. On fire: discard the draft, speak a safe
+          line, log OUTPUT_BLOCKED.</div></div>
     </div>
     <div class="foot"><span>03 · thesis</span>
-      <span class="amberline">four layers, three machines, one ledger</span></div>
+      <span class="amberline">four layers of least-disclosure</span></div>
+  </section>
+
+  <!-- S4 · STATE MACHINES -->
+  <section class="slide">
+    <header class="bar"><div class="mark">VACHAN<small>THE MACHINERY</small></div>
+      <div class="ribbon"><span class="chip green">TRANSITIONS BY CODE ONLY</span></div></header>
+    <div class="kicker rise">The model proposes — code disposes</div>
+    <h2 class="rise">Three machines. One append-only ledger.</h2>
+    <div class="m3 rise">
+      <div class="box panel">
+        <h3>Identity</h3>
+        <div class="sm">UNVERIFIED<br>→ VERIFYING<br>→ <b class="g">CONFIRMED</b><br><br>
+        any turn → <b class="r">THIRD_PARTY</b><br>
+        handover → <b>instant relock</b><br>
+        re-verify allowed<br>
+        never restored across calls</div>
+      </div>
+      <div class="box panel">
+        <h3>Promise</h3>
+        <div class="sm">NONE → CANDIDATE<br>→ READ_BACK<br>→ <b class="a">COMMITTED</b><br><br>
+        corrections force re-read-back<br>
+        explicit yes only<br>
+        idempotent — one row, ever<br>
+        call ends first → ABANDONED</div>
+      </div>
+      <div class="box panel">
+        <h3>Evidence ledger</h3>
+        <div class="sm">every transition<br>every tool decision<br>every guard block<br>
+        → <b>append-only row</b></div>
+        <div class="dispo">
+          <span class="chip green">PROMISE_CONFIRMED</span>
+          <span class="chip">CALLBACK_THIRD_PARTY</span>
+          <span class="chip">VERIFICATION_FAILED</span>
+          <span class="chip rust">ENDED_TECHNICAL</span>
+          <span class="chip rust">ENDED_OPERATOR</span>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>04 · machinery</span>
+      <span class="amberline">CONFIRMED is an authorization fact, not a label</span></div>
   </section>
 
   <!-- S4 · HOW IT WORKS -->
@@ -312,7 +343,7 @@
         <span class="name">EVIDENCE</span>
         <p class="desc">One of five dispositions + an ordered timeline of every decision.</p></div>
     </div>
-    <div class="foot"><span>04 · how it works</span>
+    <div class="foot"><span>05 · how it works</span>
       <span class="amberline">refusing to disclose IS the completed job</span></div>
   </section>
 
@@ -347,7 +378,7 @@
           then the fresh test artifact</span>
         <span class="proof">BLOCKED_POLICY</span></div>
     </div>
-    <div class="foot"><span>05 · demo</span>
+    <div class="foot"><span>06 · demo</span>
       <span class="amberline">no judge input breaks this — every path ends audited</span></div>
   </section>
 
@@ -370,7 +401,7 @@
       <div class="dim">Failure</div><div class="them">undefined</div>
         <div class="us"><b>fails closed</b> — technical ≠ business outcome</div>
     </div>
-    <div class="foot"><span>06 · difference</span>
+    <div class="foot"><span>07 · difference</span>
       <span class="amberline">the delta is the disqualification-proof</span></div>
   </section>
 
@@ -412,7 +443,7 @@
         a typed score is not evidence; a shown failure is.</span>
       </div>
     </div>
-    <div class="foot"><span>07 · evidence</span>
+    <div class="foot"><span>08 · evidence</span>
       <span class="amberline">least-disclosure applies to management too</span></div>
   </section>
 
@@ -446,7 +477,7 @@
     </div>
     <div class="closer rise">Vachan — वचन. <em>The safe call is the only call the system
       can make.</em></div>
-    <div class="foot"><span>08 · close</span><span>sarvam.pathshala.dev · dhanyavaad</span></div>
+    <div class="foot"><span>09 · close</span><span>sarvam.pathshala.dev · dhanyavaad</span></div>
   </section>
 </div>
 

@@ -285,15 +285,28 @@
 	async function endOperatorCall(): Promise<void> {
 		if (!activeCallId) return;
 		stopAgentAudio();
-		await fetch(API_ROUTES.callEnd, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				api_version: PROTOCOL_VERSION,
-				call_id: activeCallId,
-				reason: 'operator_end'
-			})
-		});
+		try {
+			const response = await fetch(API_ROUTES.callEnd, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					api_version: PROTOCOL_VERSION,
+					call_id: activeCallId,
+					reason: 'operator_end'
+				})
+			});
+			if (!response.ok) throw new Error(`End call failed with HTTP ${response.status}.`);
+
+			activeCallId = '';
+			resetPreflight('Call ended safely. Run policy preflight before starting another call.');
+			resetDetail =
+				'The active call ended successfully. Demo reset is available after explicit confirmation.';
+		} catch (error: unknown) {
+			preflightDetail =
+				error instanceof Error
+					? error.message
+					: 'End call failed; active-call protections remain engaged.';
+		}
 	}
 
 	async function takeoverOperatorCall(): Promise<void> {

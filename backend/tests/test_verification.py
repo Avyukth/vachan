@@ -73,7 +73,16 @@ def test_reference_last4_normalization(raw: str) -> None:
     assert normalize_reference_last4(raw) == "4729"
 
 
-@pytest.mark.parametrize("raw", ["14/09", "१४/०९", "14-09", "14.09"])
+@pytest.mark.parametrize("raw", ["4-7-2-9", "4 7 2 9", "४-७-२-९"])
+def test_segmented_reference_is_not_cross_parsed_as_birth(raw: str) -> None:
+    assert normalize_birth_day_month(raw) is None
+    assert normalize_reference_last4(raw) == "4729"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["14/09", "१४/०९", "14-09", "14.09", "14 09", "१४ ०९", "14,09", "14;09"],
+)
 def test_numeric_birth_date_is_not_cross_parsed_as_reference(raw: str) -> None:
     assert normalize_birth_day_month(raw) == (14, 9)
     assert normalize_reference_last4(raw) is None
@@ -225,6 +234,36 @@ def test_numeric_birth_partial_waits_for_reference_before_attempt() -> None:
     assert not isinstance(completed, PendingVerificationAttempt)
     assert completed.session == VerificationSession(1, VerificationStatus.CONFIRMED)
     assert completed.evidence.passed is True
+
+
+def test_segmented_reference_partial_waits_for_birth_before_attempt() -> None:
+    session = VerificationSession()
+    pending = collect_verification_attempt(
+        session,
+        PendingVerificationAttempt(),
+        VerificationSubmission("4-7-2-9", "4-7-2-9"),
+        EXPECTED,
+    )
+
+    assert pending == PendingVerificationAttempt(reference_last4_passed=True)
+    completed = collect_verification_attempt(
+        session,
+        pending,
+        VerificationSubmission("14/09", "14/09"),
+        EXPECTED,
+    )
+    assert not isinstance(completed, PendingVerificationAttempt)
+    assert completed.session == VerificationSession(1, VerificationStatus.CONFIRMED)
+
+
+def test_combined_numeric_birth_and_distinct_reference_remain_complete() -> None:
+    result = submit_verification(
+        VerificationSession(),
+        VerificationSubmission("14 09 reference 4729", "14 09 reference 4729"),
+        EXPECTED,
+    )
+
+    assert result.session == VerificationSession(1, VerificationStatus.CONFIRMED)
 
 
 def test_two_wrong_attempts_fail_with_fixed_content_free_close() -> None:

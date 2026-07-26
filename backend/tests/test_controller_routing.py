@@ -323,16 +323,26 @@ def test_partial_verification_turns_complete_one_attempt_without_persisting_valu
     fake.assert_consumed()
 
 
+@pytest.mark.parametrize(
+    ("birth_value", "reference_value", "scenario_suffix"),
+    [
+        ("14/09", "4729", "slash"),
+        ("14 09", "4729", "space"),
+        ("१४,०९", "4729", "devanagari-comma"),
+        ("14/09", "4-7-2-9", "segmented-reference"),
+    ],
+)
 def test_numeric_birth_partial_does_not_guess_reference_or_consume_attempt(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,
+    birth_value: str,
+    reference_value: str,
+    scenario_suffix: str,
 ) -> None:
-    birth_value = "14/09"
-    reference_value = "4729"
     controller, fake = _controller(
         db_connection,
         frozen_demo_clock,
-        "numeric-partial-verification",
+        f"numeric-partial-verification-{scenario_suffix}",
         ("Rakesh bol raha hoon", {"intent": "borrower_present"}),
         (birth_value, {"intent": "verification_response"}),
         (reference_value, {"intent": "verification_response"}),

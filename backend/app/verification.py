@@ -35,7 +35,6 @@ INCOMPLETE_VERIFICATION_INPUT_MARKER: Final = "[verification input withheld]"
 
 _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _NUMERIC_DATE_PATTERN = re.compile(r"(?<!\d)(?P<day>[0-3]?\d)\s*[/.\-]\s*(?P<month>[01]?\d)(?!\d)")
-_EXACT_NUMERIC_DATE_PATTERN = re.compile(r"^\s*[0-3]?\d\s*[/.\-]\s*[01]?\d\s*$")
 
 
 class VerificationField(StrEnum):
@@ -429,6 +428,13 @@ def _parse_day_alias(tokens: tuple[str, ...], excluded_index: int | None = None)
 def normalize_birth_day_month(value: str) -> tuple[int, int] | None:
     """Normalize Hindi/English/code-mixed day+month into numeric form."""
 
+    tokens = _normalized_tokens(value)
+    # Four separately spoken/typed digits are the frozen reference form, not a
+    # date. Prevent the date regex from taking the first two segments of
+    # ``4-7-2-9`` and prematurely completing the split-turn attempt.
+    if len(tokens) == 4 and all(len(token) == 1 and token.isdigit() for token in tokens):
+        return None
+
     normalized = unicodedata.normalize("NFKC", value).translate(_DEVANAGARI_DIGITS).casefold()
     numeric_match = _NUMERIC_DATE_PATTERN.search(normalized)
     if numeric_match is not None:
@@ -436,7 +442,6 @@ def normalize_birth_day_month(value: str) -> tuple[int, int] | None:
         month = int(numeric_match.group("month"))
         return (day, month) if 1 <= day <= 31 and 1 <= month <= 12 else None
 
-    tokens = _normalized_tokens(value)
     for month_index, token in enumerate(tokens):
         month = _MONTH_ALIASES.get(token)
         if month is None:
@@ -456,14 +461,18 @@ def normalize_birth_day_month(value: str) -> tuple[int, int] | None:
 def normalize_reference_last4(value: str) -> str | None:
     """Normalize four spoken/typed reference characters without logging them."""
 
-    normalized = unicodedata.normalize("NFKC", value).translate(_DEVANAGARI_DIGITS).casefold()
-    # A bare two-part numeric date belongs exclusively to the birth field. Without
-    # this disambiguation, the split-turn collector also interprets ``14/09`` as
-    # reference ``1409`` and consumes an attempt before the actual reference arrives.
-    if _EXACT_NUMERIC_DATE_PATTERN.fullmatch(normalized):
+    tokens = _normalized_tokens(value)
+    # Any bare two-token numeric value that is a valid date belongs exclusively
+    # to the birth field. This covers every punctuation/whitespace form accepted
+    # by ``normalize_birth_day_month`` without rejecting four-token references
+    # such as ``4-7-2-9`` or a separate reference in a combined utterance.
+    if (
+        len(tokens) == 2
+        and all(token.isdigit() for token in tokens)
+        and normalize_birth_day_month(value) is not None
+    ):
         return None
 
-    tokens = _normalized_tokens(value)
     compact = "".join(tokens).upper()
     if len(compact) == 4 and compact.isascii() and compact.isalnum():
         return compact

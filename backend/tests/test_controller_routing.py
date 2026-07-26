@@ -442,3 +442,94 @@ def test_numeric_birth_partial_does_not_guess_reference_or_consume_attempt(
         INCOMPLETE_VERIFICATION_INPUT_MARKER,
     ]
     fake.assert_consumed()
+
+
+def test_devanagari_borrower_claim_starts_verification_when_the_model_says_other(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    """Unusable model output must not block UNVERIFIED -> VERIFYING forever."""
+
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "devanagari-borrower-claim",
+        # ``other`` is exactly what an unparseable prose answer becomes.
+        ("राकेश बोल रहा हूँ", {"intent": "other"}),
+    )
+
+    async def exercise() -> str:
+        await controller.start()
+        return (await controller.run_turn()).speech_text
+
+    speech = asyncio.run(exercise())
+
+    assert controller.snapshot.identity is IdentityState.VERIFYING
+    assert speech == render_template(TemplateId.VERIFY_REQUEST)
+    assert is_bank_member(speech)
+    fake.assert_consumed()
+
+
+def test_spoken_verification_values_open_the_comparator_without_a_model_label(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    """The comparator is code's decision, not something the classifier may veto."""
+
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "comparator-without-label",
+        ("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+        ("चौदह सितंबर, reference 4729", {"intent": "other"}),
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        await controller.run_turn()
+        assert controller.snapshot.identity is IdentityState.VERIFYING
+
+        await controller.run_turn()
+
+    asyncio.run(exercise())
+
+    assert controller.snapshot.identity is IdentityState.CONFIRMED
+    assert controller.verification.attempts == 1
+    submit_decisions = db_connection.execute(
+        """
+        SELECT COUNT(*) FROM tool_decisions
+        WHERE call_id = ? AND tool = 'submit_verification'
+        """,
+        (controller.call_id,),
+    ).fetchone()[0]
+    assert submit_decisions == 1
+    fake.assert_consumed()
+
+
+def test_preconfirmation_prompt_history_is_capped(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    """Repeated pre-confirmation turns must not grow the prompt without bound."""
+
+    turns = tuple(("haan boliye", {"intent": "borrower_present"}) for _ in range(5))
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        "history-cap",
+        *turns,
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        for _ in turns:
+            await controller.run_turn()
+
+    asyncio.run(exercise())
+
+    assert controller.snapshot.identity is IdentityState.UNVERIFIED
+    # Two system prompts + at most three user/assistant exchanges + this utterance.
+    assert [len(request["messages"]) for request in fake.chat_requests] == [3, 5, 7, 9, 9]
+    # The full trail is still retained in memory for auditing, just not sent.
+    assert len(controller.history) == 10
+    fake.assert_consumed()

@@ -24,6 +24,8 @@ class TemplateId(StrEnum):
     TECH_DIFFICULTY_CLOSE = "TECH_DIFFICULTY_CLOSE"
     OUTPUT_GUARD_FALLBACK = "OUTPUT_GUARD_FALLBACK"
     STT_RECOVERY = "STT_RECOVERY"
+    PROMISE_AMOUNT_REQUIRED = "PROMISE_AMOUNT_REQUIRED"
+    PROMISE_DATE_REQUIRED = "PROMISE_DATE_REQUIRED"
 
 
 TEMPLATE_BANK = MappingProxyType(
@@ -52,6 +54,8 @@ TEMPLATE_BANK = MappingProxyType(
             "माफ़ कीजिए, मैं वह बात सुरक्षित रूप से नहीं कह सकती। कृपया एक क्षण रुकिए।",
         ),
         TemplateId.STT_RECOVERY: ("line kharab hai, dobara boliye",),
+        TemplateId.PROMISE_AMOUNT_REQUIRED: ("कृपया पूरी रकम फिर बताइए।",),
+        TemplateId.PROMISE_DATE_REQUIRED: ("कृपया तारीख या दिन फिर बताइए।",),
     }
 )
 

@@ -133,6 +133,57 @@ def test_invalid_offer_facts_record_one_redacted_denial_before_clarifying(
     fake.assert_consumed()
 
 
+@pytest.mark.parametrize(
+    ("action", "reason_code", "template_id"),
+    [
+        (
+            {"intent": "offer_promise", "date_phrase": "Friday"},
+            "missing_amount",
+            TemplateId.PROMISE_AMOUNT_REQUIRED,
+        ),
+        (
+            {"intent": "offer_promise", "amount_minor": 150_000},
+            "missing_date",
+            TemplateId.PROMISE_DATE_REQUIRED,
+        ),
+    ],
+)
+def test_missing_offer_field_gets_specific_safe_recovery(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+    action: Mapping[str, object],
+    reason_code: str,
+    template_id: TemplateId,
+) -> None:
+    controller, fake = _controller(
+        db_connection,
+        frozen_demo_clock,
+        name=f"offer-{reason_code}",
+        actions=(("incomplete promise offer", action),),
+    )
+
+    speech = asyncio.run(_run_all(controller, 3))[-1]
+
+    assert speech == render_template(template_id)
+    assert controller.snapshot.promise is PromiseState.NONE
+    assert (
+        db_connection.execute(
+            "SELECT COUNT(*) FROM promise_candidates WHERE call_id = ?",
+            (controller.call_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    decisions = _tool_decisions(
+        db_connection,
+        call_id=controller.call_id,
+        tool=ToolName.CREATE_PROMISE_CANDIDATE,
+    )
+    assert [(row["allowed"], row["reason"]) for row in decisions] == [
+        (0, f"invalid_action_facts={reason_code}")
+    ]
+    fake.assert_consumed()
+
+
 def test_correction_without_authoritative_candidate_is_denied(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,

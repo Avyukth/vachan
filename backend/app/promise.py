@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import re
 import sqlite3
 import unicodedata
@@ -18,7 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from app.contracts import LedgerEventType
 from app.db import EvidenceLedger, derive_idempotency_key
@@ -56,6 +57,9 @@ class PromiseAlreadyCommitted(PromiseFlowError):
 
 class PromisePersistenceError(PromiseFlowError):
     """Candidate persistence did not match the engine's authoritative state."""
+
+
+MutationT = TypeVar("MutationT")
 
 
 _CURRENCY_MARKERS = frozenset(
@@ -535,19 +539,53 @@ class CommitOutcome:
     inserted: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateMutation:
+    """Pure candidate plan whose effect must run inside the tool gate."""
+
+    candidate: PromiseCandidate
+    state_before: PromiseState
+    state_after: PromiseState
+    event_type: PromiseEventType
+    redacted_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CommitMutation:
+    """Pure commit plan whose insert must run inside the tool gate."""
+
+    candidate: PromiseCandidate
+    state_before: PromiseState
+    state_after: PromiseState
+
+
 class PromiseRepository(Protocol):
     """Persistence required by the deterministic promise engine."""
 
+    def save_candidate_now(self, candidate: PromiseCandidate) -> None: ...
+
     async def save_candidate(self, candidate: PromiseCandidate) -> None: ...
+
+    def mark_read_back_now(self, candidate: PromiseCandidate, *, ts: datetime) -> None: ...
 
     async def mark_read_back(self, candidate: PromiseCandidate, *, ts: datetime) -> None: ...
 
+    def mark_confirmed_now(self, candidate: PromiseCandidate, *, ts: datetime) -> None: ...
+
     async def mark_confirmed(self, candidate: PromiseCandidate, *, ts: datetime) -> None: ...
+
+    def commit_now(self, candidate: PromiseCandidate, *, ts: datetime) -> CommitOutcome: ...
 
     async def commit(self, candidate: PromiseCandidate, *, ts: datetime) -> CommitOutcome: ...
 
+    def load_state_now(
+        self,
+        call_id: str,
+    ) -> tuple[PromiseState, PromiseCandidate | None]: ...
+
 
 EventRecorder = Callable[[PromiseEvent], Awaitable[None] | None]
+AtomicEventApplier = Callable[[PromiseEvent, Callable[[], MutationT]], MutationT]
 Clock = Callable[[], datetime]
 
 
@@ -565,59 +603,70 @@ class SQLitePromiseRepository:
         self._connection = ledger.connection
         self._lock = asyncio.Lock()
 
+    def save_candidate_now(self, candidate: PromiseCandidate) -> None:
+        """Persist one revision without yielding after the authorization recheck."""
+
+        self._connection.execute(
+            """
+            INSERT INTO promise_candidates (
+                id, call_id, caller_phrase, amount_minor, date_iso, revision,
+                read_back_ts, confirmed_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+            """,
+            (
+                candidate.candidate_id,
+                candidate.call_id,
+                candidate.caller_phrase,
+                candidate.amount_minor,
+                candidate.date_iso.isoformat(),
+                candidate.revision,
+            ),
+        )
+
     async def save_candidate(self, candidate: PromiseCandidate) -> None:
         async with self._lock:
-            self._connection.execute(
-                """
-                INSERT INTO promise_candidates (
-                    id, call_id, caller_phrase, amount_minor, date_iso, revision,
-                    read_back_ts, confirmed_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
-                """,
-                (
-                    candidate.candidate_id,
-                    candidate.call_id,
-                    candidate.caller_phrase,
-                    candidate.amount_minor,
-                    candidate.date_iso.isoformat(),
-                    candidate.revision,
-                ),
-            )
+            self.save_candidate_now(candidate)
 
-    async def mark_read_back(self, candidate: PromiseCandidate, *, ts: datetime) -> None:
-        async with self._lock:
-            cursor = self._connection.execute(
-                """
-                UPDATE promise_candidates
-                SET read_back_ts = ?
-                WHERE id = ? AND revision = ? AND read_back_ts IS NULL
-                """,
-                (
-                    _aware_timestamp(ts),
-                    candidate.candidate_id,
-                    candidate.revision,
-                ),
-            )
+    def mark_read_back_now(self, candidate: PromiseCandidate, *, ts: datetime) -> None:
+        cursor = self._connection.execute(
+            """
+            UPDATE promise_candidates
+            SET read_back_ts = ?
+            WHERE id = ? AND revision = ? AND read_back_ts IS NULL
+            """,
+            (
+                _aware_timestamp(ts),
+                candidate.candidate_id,
+                candidate.revision,
+            ),
+        )
         if cursor.rowcount != 1:
             raise PromisePersistenceError("candidate could not be marked read back exactly once")
 
-    async def mark_confirmed(self, candidate: PromiseCandidate, *, ts: datetime) -> None:
+    async def mark_read_back(self, candidate: PromiseCandidate, *, ts: datetime) -> None:
         async with self._lock:
-            cursor = self._connection.execute(
-                """
-                UPDATE promise_candidates
-                SET confirmed_ts = ?
-                WHERE id = ? AND revision = ?
-                  AND read_back_ts IS NOT NULL AND confirmed_ts IS NULL
-                """,
-                (
-                    _aware_timestamp(ts),
-                    candidate.candidate_id,
-                    candidate.revision,
-                ),
-            )
+            self.mark_read_back_now(candidate, ts=ts)
+
+    def mark_confirmed_now(self, candidate: PromiseCandidate, *, ts: datetime) -> None:
+        cursor = self._connection.execute(
+            """
+            UPDATE promise_candidates
+            SET confirmed_ts = ?
+            WHERE id = ? AND revision = ?
+              AND read_back_ts IS NOT NULL AND confirmed_ts IS NULL
+            """,
+            (
+                _aware_timestamp(ts),
+                candidate.candidate_id,
+                candidate.revision,
+            ),
+        )
         if cursor.rowcount != 1:
             raise PromisePersistenceError("candidate confirmation requires one persisted read-back")
+
+    async def mark_confirmed(self, candidate: PromiseCandidate, *, ts: datetime) -> None:
+        async with self._lock:
+            self.mark_confirmed_now(candidate, ts=ts)
 
     def _existing_commit(self, candidate: PromiseCandidate) -> CommitOutcome | None:
         row = self._connection.execute(
@@ -636,28 +685,95 @@ class SQLitePromiseRepository:
             raise PromiseAlreadyCommitted("a call may not commit a different candidate revision")
         return CommitOutcome(idempotency_key=str(row["idempotency_key"]), inserted=False)
 
+    def commit_now(self, candidate: PromiseCandidate, *, ts: datetime) -> CommitOutcome:
+        """Insert a promise synchronously inside the authorization boundary."""
+
+        existing = self._existing_commit(candidate)
+        if existing is not None:
+            return existing
+        key = derive_idempotency_key(candidate.candidate_id, candidate.revision)
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO promises (
+                    call_id, candidate_id, candidate_revision, amount_minor,
+                    date_iso, idempotency_key, committed_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate.call_id,
+                    candidate.candidate_id,
+                    candidate.revision,
+                    candidate.amount_minor,
+                    candidate.date_iso.isoformat(),
+                    key,
+                    _aware_timestamp(ts),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # A concurrent duplicate is safe only when it resolves to the
+            # exact same candidate/revision. Every other conflict fails.
+            concurrent = self._existing_commit(candidate)
+            if concurrent is None:
+                raise
+            return concurrent
+        return CommitOutcome(idempotency_key=key, inserted=True)
+
     async def commit(self, candidate: PromiseCandidate, *, ts: datetime) -> CommitOutcome:
         async with self._lock:
-            existing = self._existing_commit(candidate)
-            if existing is not None:
-                return existing
-            try:
-                key = await self._ledger.commit_promise(
-                    call_id=candidate.call_id,
-                    candidate_id=candidate.candidate_id,
-                    revision=candidate.revision,
-                    amount_minor=candidate.amount_minor,
-                    date_iso=candidate.date_iso.isoformat(),
-                    committed_ts=ts,
-                )
-            except sqlite3.IntegrityError:
-                # A concurrent duplicate is safe only when it resolves to the
-                # exact same candidate/revision.  Every other conflict fails.
-                concurrent = self._existing_commit(candidate)
-                if concurrent is None:
-                    raise
-                return concurrent
-        return CommitOutcome(idempotency_key=key, inserted=True)
+            return self.commit_now(candidate, ts=ts)
+
+    def load_state_now(
+        self,
+        call_id: str,
+    ) -> tuple[PromiseState, PromiseCandidate | None]:
+        """Reconstruct the latest durable promise state after process restart."""
+
+        row = self._connection.execute(
+            """
+            SELECT id, call_id, caller_phrase, amount_minor, date_iso, revision
+            FROM promise_candidates
+            WHERE call_id = ?
+            ORDER BY revision DESC
+            LIMIT 1
+            """,
+            (call_id,),
+        ).fetchone()
+        if row is None:
+            return PromiseState.NONE, None
+        candidate = PromiseCandidate(
+            candidate_id=str(row["id"]),
+            call_id=str(row["call_id"]),
+            caller_phrase=str(row["caller_phrase"]),
+            amount_minor=int(row["amount_minor"]),
+            date_iso=date.fromisoformat(str(row["date_iso"])),
+            revision=int(row["revision"]),
+        )
+        event = self._connection.execute(
+            """
+            SELECT state_after
+            FROM events
+            WHERE call_id = ? AND type IN (
+                'PROMISE_CANDIDATE_CREATED',
+                'PROMISE_CANDIDATE_CORRECTED',
+                'PROMISE_READ_BACK',
+                'PROMISE_EXPLICITLY_CONFIRMED',
+                'PROMISE_COMMITTED',
+                'PROMISE_ABANDONED',
+                'PROMISE_DUPLICATE_SUPPRESSED'
+            )
+            ORDER BY seq DESC
+            LIMIT 1
+            """,
+            (call_id,),
+        ).fetchone()
+        if event is None:
+            raise PromisePersistenceError("candidate exists without promise evidence")
+        try:
+            state = PromiseState(json.loads(str(event["state_after"]))["promise"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise PromisePersistenceError("promise evidence contains an invalid state") from error
+        return state, candidate
 
 
 class PromiseEngine:
@@ -671,6 +787,7 @@ class PromiseEngine:
         demo_time_anchor: datetime,
         clock: Clock,
         record_event: EventRecorder,
+        atomic_event_applier: AtomicEventApplier | None = None,
     ) -> None:
         if not call_id.strip():
             raise ValueError("call_id must not be empty")
@@ -680,8 +797,16 @@ class PromiseEngine:
         self._demo_time_anchor = demo_time_anchor
         self._clock = clock
         self._record_event = record_event
+        self._atomic_event_applier = atomic_event_applier
         self._state = PromiseState.NONE
         self._candidate: PromiseCandidate | None = None
+
+    def restore_from_repository(self) -> None:
+        """Restore only evidence-backed promise state after process interruption."""
+
+        state, candidate = self._repository.load_state_now(self.call_id)
+        self._state = state
+        self._candidate = candidate
 
     @property
     def state(self) -> PromiseState:
@@ -691,18 +816,16 @@ class PromiseEngine:
     def candidate(self) -> PromiseCandidate | None:
         return self._candidate
 
-    async def _record(
+    def _event(
         self,
         event_type: PromiseEventType,
         *,
+        candidate: PromiseCandidate,
         before: PromiseState,
         after: PromiseState,
         reason: str,
-    ) -> None:
-        candidate = self._candidate
-        if candidate is None:
-            raise PromiseFlowError("a promise event requires an active candidate")
-        event = PromiseEvent(
+    ) -> PromiseEvent:
+        return PromiseEvent(
             event_type=event_type,
             candidate_id=candidate.candidate_id,
             revision=candidate.revision,
@@ -710,9 +833,19 @@ class PromiseEngine:
             state_after=after,
             redacted_reason=reason,
         )
-        result = self._record_event(event)
-        if inspect.isawaitable(result):
-            await result
+
+    def _apply_with_evidence(
+        self,
+        event: PromiseEvent,
+        mutation: Callable[[], MutationT],
+    ) -> MutationT:
+        if self._atomic_event_applier is None:
+            return mutation()
+        return self._atomic_event_applier(event, mutation)
+
+    async def _record_unless_atomic(self, event: PromiseEvent) -> None:
+        if self._atomic_event_applier is None:
+            await self.record_applied_event(event)
 
     def _plan_transition(self, target: PromiseState) -> tuple[PromiseState, PromiseState]:
         before = self._state
@@ -722,14 +855,14 @@ class PromiseEngine:
     def _apply_transition(self, target: PromiseState) -> None:
         self._state = target
 
-    async def create_candidate(
+    def plan_candidate(
         self,
         *,
         caller_phrase: str,
         amount: str | int,
         date_phrase: str,
-    ) -> PromiseCandidate:
-        """Normalize and persist revision one without committing it."""
+    ) -> CandidateMutation:
+        """Normalize revision one without mutating engine state or SQLite."""
 
         if self._state is not PromiseState.NONE:
             raise PromiseFlowError("a call may create only one promise candidate lineage")
@@ -745,25 +878,22 @@ class PromiseEngine:
             revision=1,
         )
         before, after = self._plan_transition(PromiseState.CANDIDATE)
-        await self._repository.save_candidate(candidate)
-        self._candidate = candidate
-        self._apply_transition(after)
-        await self._record(
-            PromiseEventType.CANDIDATE_CREATED,
-            before=before,
-            after=after,
-            reason="candidate_normalized",
+        return CandidateMutation(
+            candidate=candidate,
+            state_before=before,
+            state_after=after,
+            event_type=PromiseEventType.CANDIDATE_CREATED,
+            redacted_reason="candidate_normalized",
         )
-        return candidate
 
-    async def correct_candidate(
+    def plan_correction(
         self,
         *,
         caller_phrase: str,
         amount: str | int | None = None,
         date_phrase: str | None = None,
-    ) -> PromiseCandidate:
-        """Append a revision and force that revision through another read-back."""
+    ) -> CandidateMutation:
+        """Normalize a new revision without mutating engine state or SQLite."""
 
         previous = self._candidate
         if previous is None:
@@ -789,16 +919,78 @@ class PromiseEngine:
             revision=previous.revision + 1,
         )
         before, after = self._plan_transition(PromiseState.CORRECTED)
-        await self._repository.save_candidate(candidate)
-        self._candidate = candidate
-        self._apply_transition(after)
-        await self._record(
-            PromiseEventType.CANDIDATE_CORRECTED,
-            before=before,
-            after=after,
-            reason="candidate_revision_appended",
+        return CandidateMutation(
+            candidate=candidate,
+            state_before=before,
+            state_after=after,
+            event_type=PromiseEventType.CANDIDATE_CORRECTED,
+            redacted_reason="candidate_revision_appended",
         )
-        return candidate
+
+    def apply_candidate(self, mutation: CandidateMutation) -> PromiseEvent:
+        """Apply a prepared candidate synchronously inside the tool gate."""
+
+        if self._state is not mutation.state_before:
+            raise PromiseFlowError("candidate plan is stale")
+        event = self._event(
+            mutation.event_type,
+            candidate=mutation.candidate,
+            before=mutation.state_before,
+            after=mutation.state_after,
+            reason=mutation.redacted_reason,
+        )
+        self._apply_with_evidence(
+            event,
+            lambda: self._repository.save_candidate_now(mutation.candidate),
+        )
+        self._candidate = mutation.candidate
+        self._apply_transition(mutation.state_after)
+        return event
+
+    async def record_applied_event(self, event: PromiseEvent) -> None:
+        """Append evidence for a mutation already completed by the tool gate."""
+
+        if self._atomic_event_applier is not None:
+            return
+        result = self._record_event(event)
+        if inspect.isawaitable(result):
+            await result
+
+    async def create_candidate(
+        self,
+        *,
+        caller_phrase: str,
+        amount: str | int,
+        date_phrase: str,
+    ) -> PromiseCandidate:
+        """Normalize and persist revision one without committing it."""
+
+        mutation = self.plan_candidate(
+            caller_phrase=caller_phrase,
+            amount=amount,
+            date_phrase=date_phrase,
+        )
+        event = self.apply_candidate(mutation)
+        await self.record_applied_event(event)
+        return mutation.candidate
+
+    async def correct_candidate(
+        self,
+        *,
+        caller_phrase: str,
+        amount: str | int | None = None,
+        date_phrase: str | None = None,
+    ) -> PromiseCandidate:
+        """Append a revision and force that revision through another read-back."""
+
+        mutation = self.plan_correction(
+            caller_phrase=caller_phrase,
+            amount=amount,
+            date_phrase=date_phrase,
+        )
+        event = self.apply_candidate(mutation)
+        await self.record_applied_event(event)
+        return mutation.candidate
 
     async def read_back(self) -> str:
         """Persist the read-back fact before returning speakable reviewed text."""
@@ -807,14 +999,20 @@ class PromiseEngine:
         if candidate is None:
             raise PromiseFlowError("read-back requires an existing candidate")
         before, after = self._plan_transition(PromiseState.READ_BACK)
-        await self._repository.mark_read_back(candidate, ts=self._clock())
-        self._apply_transition(after)
-        await self._record(
+        timestamp = self._clock()
+        event = self._event(
             PromiseEventType.READ_BACK,
+            candidate=candidate,
             before=before,
             after=after,
             reason="normalized_candidate_read_back",
         )
+        self._apply_with_evidence(
+            event,
+            lambda: self._repository.mark_read_back_now(candidate, ts=timestamp),
+        )
+        self._apply_transition(after)
+        await self._record_unless_atomic(event)
         return render_promise_read_back(candidate)
 
     async def respond_to_read_back(
@@ -829,13 +1027,18 @@ class PromiseEngine:
             raise PromiseFlowError("confirmation requires an existing candidate")
 
         if self._state is PromiseState.COMMITTED and explicit_affirmative:
-            outcome = await self._repository.commit(candidate, ts=self._clock())
-            await self._record(
+            event = self._event(
                 PromiseEventType.DUPLICATE_SUPPRESSED,
+                candidate=candidate,
                 before=PromiseState.COMMITTED,
                 after=PromiseState.COMMITTED,
                 reason="duplicate_affirmative_suppressed",
             )
+            outcome = self._apply_with_evidence(
+                event,
+                lambda: self._repository.commit_now(candidate, ts=self._clock()),
+            )
+            await self._record_unless_atomic(event)
             return outcome
 
         if self._state is not PromiseState.READ_BACK:
@@ -843,38 +1046,80 @@ class PromiseEngine:
 
         if not explicit_affirmative:
             before, after = self._plan_transition(PromiseState.ABANDONED)
-            self._apply_transition(after)
-            await self._record(
+            event = self._event(
                 PromiseEventType.ABANDONED,
+                candidate=candidate,
                 before=before,
                 after=after,
                 reason="read_back_rejected",
             )
+            self._apply_with_evidence(event, lambda: None)
+            self._apply_transition(after)
+            await self._record_unless_atomic(event)
             return None
+
+        await self.record_explicit_affirmative()
+        mutation = self.plan_commit()
+        outcome, event = self.apply_commit(mutation)
+        await self.record_applied_event(event)
+        return outcome
+
+    async def record_explicit_affirmative(self) -> None:
+        """Persist affirmative evidence before commit authorization is requested."""
+
+        candidate = self._candidate
+        if candidate is None:
+            raise PromiseFlowError("confirmation requires an existing candidate")
+        if self._state is not PromiseState.READ_BACK:
+            raise PromiseFlowError("explicit confirmation is accepted only after read-back")
 
         confirmed_at = self._clock()
         before, after = self._plan_transition(PromiseState.CONFIRMED)
-        await self._repository.mark_confirmed(candidate, ts=confirmed_at)
-        self._apply_transition(after)
-        await self._record(
+        event = self._event(
             PromiseEventType.EXPLICITLY_CONFIRMED,
+            candidate=candidate,
             before=before,
             after=after,
             reason="explicit_affirmative_recorded",
         )
-
-        before, after = self._plan_transition(PromiseState.COMMITTED)
-        outcome = await self._repository.commit(candidate, ts=self._clock())
-        self._apply_transition(after)
-        await self._record(
-            PromiseEventType.COMMITTED,
-            before=before,
-            after=after,
-            reason=(
-                "promise_committed" if outcome.inserted else "duplicate_affirmative_suppressed"
-            ),
+        self._apply_with_evidence(
+            event,
+            lambda: self._repository.mark_confirmed_now(candidate, ts=confirmed_at),
         )
-        return outcome
+        self._apply_transition(after)
+        await self._record_unless_atomic(event)
+
+    def plan_commit(self) -> CommitMutation:
+        """Prepare a promise insert after affirmative evidence is durable."""
+
+        candidate = self._candidate
+        if candidate is None:
+            raise PromiseFlowError("commit requires an existing candidate")
+        before, after = self._plan_transition(PromiseState.COMMITTED)
+        return CommitMutation(
+            candidate=candidate,
+            state_before=before,
+            state_after=after,
+        )
+
+    def apply_commit(self, mutation: CommitMutation) -> tuple[CommitOutcome, PromiseEvent]:
+        """Insert the prepared promise synchronously inside the tool gate."""
+
+        if self._state is not mutation.state_before:
+            raise PromiseFlowError("commit plan is stale")
+        event = self._event(
+            PromiseEventType.COMMITTED,
+            candidate=mutation.candidate,
+            before=mutation.state_before,
+            after=mutation.state_after,
+            reason="promise_committed",
+        )
+        outcome = self._apply_with_evidence(
+            event,
+            lambda: self._repository.commit_now(mutation.candidate, ts=self._clock()),
+        )
+        self._apply_transition(mutation.state_after)
+        return outcome, event
 
     async def abandon(self) -> None:
         """Abandon an unconfirmed candidate when its call ends."""
@@ -882,13 +1127,16 @@ class PromiseEngine:
         if self._candidate is None or self._state is PromiseState.NONE:
             return
         before, after = self._plan_transition(PromiseState.ABANDONED)
-        self._apply_transition(after)
-        await self._record(
+        event = self._event(
             PromiseEventType.ABANDONED,
+            candidate=self._candidate,
             before=before,
             after=after,
             reason="call_ended_before_confirmation",
         )
+        self._apply_with_evidence(event, lambda: None)
+        self._apply_transition(after)
+        await self._record_unless_atomic(event)
 
 
 def expected_idempotency_key(candidate: PromiseCandidate) -> str:

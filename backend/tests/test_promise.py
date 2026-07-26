@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from app.contracts import StateSnapshot
 from app.db import EvidenceLedger
 from app.promise import (
     AmbiguousAmountError,
@@ -27,7 +29,7 @@ from app.promise import (
     render_promise_read_back,
 )
 from app.seeds import DEMO_TIME_ANCHOR
-from app.states import PromiseState
+from app.states import CallState, IdentityState, PromiseState
 
 NOW = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
 
@@ -173,6 +175,47 @@ def _engine(
     return engine, events
 
 
+def _atomic_engine(
+    connection: sqlite3.Connection,
+    *,
+    call_id: str = "call-promise-001",
+) -> tuple[PromiseEngine, list[PromiseEvent]]:
+    events: list[PromiseEvent] = []
+    ledger = EvidenceLedger(connection)
+    snapshot = StateSnapshot(
+        call=CallState.ACTIVE,
+        identity=IdentityState.CONFIRMED,
+        promise=PromiseState.NONE,
+    )
+
+    def apply_event(event: PromiseEvent, mutation):
+        result, _seq = ledger.mutate_with_event(
+            call_id=call_id,
+            ts=NOW,
+            event_type=event.event_type,
+            state_before=replace(snapshot, promise=event.state_before),
+            state_after=replace(snapshot, promise=event.state_after),
+            redacted_reason=event.redacted_reason,
+            mutation=mutation,
+        )
+        events.append(event)
+        return result
+
+    engine = PromiseEngine(
+        call_id=call_id,
+        repository=SQLitePromiseRepository(ledger),
+        demo_time_anchor=DEMO_TIME_ANCHOR,
+        clock=lambda: NOW,
+        record_event=events.append,
+        atomic_event_applier=apply_event,
+    )
+    return engine, events
+
+
+def _table_rows(connection: sqlite3.Connection, table: str) -> list[tuple[object, ...]]:
+    return [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+
+
 def test_candidate_read_back_explicit_yes_commits_exactly_once(
     db_connection: sqlite3.Connection,
 ) -> None:
@@ -203,6 +246,168 @@ def test_candidate_read_back_explicit_yes_commits_exactly_once(
     ]
     assert db_connection.execute("SELECT COUNT(*) FROM promises").fetchone()[0] == 1
     assert db_connection.execute("SELECT amount_minor FROM promises").fetchone()[0] == 150_000
+
+
+def test_prepared_mutations_do_nothing_until_the_gate_applies_them(
+    db_connection: sqlite3.Connection,
+) -> None:
+    _start_call(db_connection)
+    engine, events = _engine(db_connection)
+
+    async def exercise() -> None:
+        candidate = engine.plan_candidate(
+            caller_phrase="pandrah sau, Friday",
+            amount="pandrah sau",
+            date_phrase="Friday",
+        )
+        assert engine.state is PromiseState.NONE
+        assert db_connection.execute("SELECT COUNT(*) FROM promise_candidates").fetchone()[0] == 0
+
+        created = engine.apply_candidate(candidate)
+        await engine.record_applied_event(created)
+        await engine.read_back()
+        await engine.record_explicit_affirmative()
+
+        commit = engine.plan_commit()
+        assert engine.state is PromiseState.CONFIRMED
+        assert db_connection.execute("SELECT COUNT(*) FROM promises").fetchone()[0] == 0
+        assert events[-1].event_type is PromiseEventType.EXPLICITLY_CONFIRMED
+
+        _outcome, committed = engine.apply_commit(commit)
+        await engine.record_applied_event(committed)
+
+    asyncio.run(exercise())
+
+    assert engine.state is PromiseState.COMMITTED
+    assert db_connection.execute("SELECT COUNT(*) FROM promises").fetchone()[0] == 1
+    assert [event.event_type for event in events][-2:] == [
+        PromiseEventType.EXPLICITLY_CONFIRMED,
+        PromiseEventType.COMMITTED,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("boundary", "rejected_event"),
+    [
+        ("create", PromiseEventType.CANDIDATE_CREATED),
+        ("correction", PromiseEventType.CANDIDATE_CORRECTED),
+        ("read_back", PromiseEventType.READ_BACK),
+        ("confirmation", PromiseEventType.EXPLICITLY_CONFIRMED),
+        ("commit", PromiseEventType.COMMITTED),
+        ("duplicate", PromiseEventType.DUPLICATE_SUPPRESSED),
+        ("abandonment", PromiseEventType.ABANDONED),
+    ],
+)
+def test_atomic_evidence_failure_leaves_no_partial_promise_state(
+    db_connection: sqlite3.Connection,
+    boundary: str,
+    rejected_event: PromiseEventType,
+) -> None:
+    _start_call(db_connection)
+    engine, events = _atomic_engine(db_connection)
+
+    async def prepare() -> None:
+        if boundary == "create":
+            return
+        await engine.create_candidate(
+            caller_phrase="pandrah sau, Friday",
+            amount="pandrah sau",
+            date_phrase="Friday",
+        )
+        if boundary in {"correction", "read_back"}:
+            if boundary == "correction":
+                await engine.read_back()
+            return
+        await engine.read_back()
+        if boundary in {"confirmation", "abandonment"}:
+            return
+        await engine.record_explicit_affirmative()
+        if boundary == "duplicate":
+            mutation = engine.plan_commit()
+            _outcome, committed = engine.apply_commit(mutation)
+            await engine.record_applied_event(committed)
+
+    asyncio.run(prepare())
+    before_state = engine.state
+    before_candidate = engine.candidate
+    before_candidates = _table_rows(db_connection, "promise_candidates")
+    before_promises = _table_rows(db_connection, "promises")
+    before_events = _table_rows(db_connection, "events")
+    before_recorded = list(events)
+    db_connection.execute(
+        f"""
+        CREATE TRIGGER reject_{boundary}_event
+        BEFORE INSERT ON events
+        WHEN NEW.type = '{rejected_event.value}'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected promise evidence failure');
+        END
+        """
+    )
+
+    async def exercise() -> None:
+        if boundary == "create":
+            await engine.create_candidate(
+                caller_phrase="pandrah sau, Friday",
+                amount="pandrah sau",
+                date_phrase="Friday",
+            )
+        elif boundary == "correction":
+            await engine.correct_candidate(
+                caller_phrase="nahi, ek hazaar",
+                amount="ek hazaar",
+            )
+        elif boundary == "read_back":
+            await engine.read_back()
+        elif boundary == "confirmation":
+            await engine.record_explicit_affirmative()
+        elif boundary == "commit":
+            engine.apply_commit(engine.plan_commit())
+        elif boundary == "duplicate":
+            await engine.respond_to_read_back(explicit_affirmative=True)
+        else:
+            await engine.abandon()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected promise evidence failure"):
+        asyncio.run(exercise())
+
+    assert engine.state is before_state
+    assert engine.candidate == before_candidate
+    assert _table_rows(db_connection, "promise_candidates") == before_candidates
+    assert _table_rows(db_connection, "promises") == before_promises
+    assert _table_rows(db_connection, "events") == before_events
+    assert events == before_recorded
+
+
+def test_engine_restores_only_durable_state_and_keeps_commit_idempotent(
+    db_connection: sqlite3.Connection,
+) -> None:
+    _start_call(db_connection)
+    first, _events = _atomic_engine(db_connection)
+
+    async def prepare_read_back() -> None:
+        await first.create_candidate(
+            caller_phrase="pandrah sau, Friday",
+            amount="pandrah sau",
+            date_phrase="Friday",
+        )
+        await first.read_back()
+
+    asyncio.run(prepare_read_back())
+
+    restored, _restored_events = _atomic_engine(db_connection)
+    restored.restore_from_repository()
+    assert restored.state is PromiseState.READ_BACK
+    assert restored.candidate == first.candidate
+
+    asyncio.run(restored.respond_to_read_back(explicit_affirmative=True))
+
+    restarted_again, _restart_events = _atomic_engine(db_connection)
+    restarted_again.restore_from_repository()
+    assert restarted_again.state is PromiseState.COMMITTED
+    duplicate = asyncio.run(restarted_again.respond_to_read_back(explicit_affirmative=True))
+    assert duplicate is not None and duplicate.inserted is False
+    assert db_connection.execute("SELECT COUNT(*) FROM promises").fetchone()[0] == 1
 
 
 def test_correction_appends_revision_and_forces_second_read_back(

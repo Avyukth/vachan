@@ -43,8 +43,17 @@ def test_happy_replay_completes_call_before_terminal_disposition() -> None:
     frames = load_replay_fixture(ReplayFixture.HAPPY, call_id="test-happy")
     events = [frame.event for frame in frames]
 
+    promise_transition = events[-3]
     terminal_transition = events[-2]
     disposition = events[-1]
+    assert promise_transition.type == "state_change"
+    assert promise_transition.payload == {
+        "source": REPLAY_SOURCE,
+        "replay_label": REPLAY_LABEL,
+        "machine": "promise",
+        "before": "READ_BACK",
+        "after": "COMMITTED",
+    }
     assert terminal_transition.type == "state_change"
     assert terminal_transition.payload == {
         "source": REPLAY_SOURCE,

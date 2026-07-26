@@ -177,6 +177,23 @@
       "payload": {
         "source": "recorded_replay",
         "replay_label": "REPLAY — recorded sequence",
+        "machine": "promise",
+        "before": "READ_BACK",
+        "after": "COMMITTED"
+      }
+    }
+  },
+  {
+    "delay_ms": 400,
+    "event": {
+      "api_version": "v0",
+      "type": "state_change",
+      "call_id": "fixture",
+      "seq": 12,
+      "ts": "2026-07-26T12:00:11+05:30",
+      "payload": {
+        "source": "recorded_replay",
+        "replay_label": "REPLAY — recorded sequence",
         "machine": "call",
         "before": "ACTIVE",
         "after": "COMPLETED"
@@ -189,8 +206,8 @@
       "api_version": "v0",
       "type": "disposition",
       "call_id": "fixture",
-      "seq": 12,
-      "ts": "2026-07-26T12:00:11+05:30",
+      "seq": 13,
+      "ts": "2026-07-26T12:00:12+05:30",
       "payload": {
         "source": "recorded_replay",
         "replay_label": "REPLAY — recorded sequence",

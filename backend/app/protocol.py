@@ -15,6 +15,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    StrictBool,
     StringConstraints,
     TypeAdapter,
     model_validator,
@@ -125,6 +126,24 @@ VoiceServerFrame = Annotated[
     Field(discriminator="type"),
 ]
 VOICE_SERVER_FRAME_ADAPTER = TypeAdapter(VoiceServerFrame)
+
+
+class AgentFloorControlFrame(ProtocolModel):
+    """Browser signal delimiting an agent-playback suppression window.
+
+    The backend, not the browser, decides whether the edge interrupted an
+    in-progress utterance from its authoritative STT/VAD state.
+    """
+
+    type: Literal["agent_floor"] = "agent_floor"
+    held: StrictBool
+
+
+VoiceClientControlFrame = Annotated[
+    AgentFloorControlFrame,
+    Field(discriminator="type"),
+]
+VOICE_CLIENT_CONTROL_FRAME_ADAPTER = TypeAdapter(VoiceClientControlFrame)
 
 
 class CaseSummary(ProtocolModel):

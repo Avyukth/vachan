@@ -9,8 +9,10 @@ from pydantic import ValidationError
 
 from app.protocol import (
     PROTOCOL_VERSION,
+    VOICE_CLIENT_CONTROL_FRAME_ADAPTER,
     VOICE_SERVER_FRAME_ADAPTER,
     AgentAudioFrame,
+    AgentFloorControlFrame,
     CasesResponse,
     CaseSummary,
     EventType,
@@ -155,6 +157,30 @@ def test_live_voice_frames_are_versioned_call_scoped_and_discriminated() -> None
         assert VOICE_SERVER_FRAME_ADAPTER.validate_python(body) == frame
     assert frames[1].model_dump(mode="json")["source"] == "transient_media"
     assert "seq" not in frames[1].model_dump(mode="json")
+
+
+def test_agent_floor_control_is_versioned_strict_and_content_free() -> None:
+    """The browser reports only playback ownership; STT decides interruption."""
+    frame = AgentFloorControlFrame(held=True)
+    body = frame.model_dump(mode="json")
+
+    assert body == {
+        "api_version": PROTOCOL_VERSION,
+        "type": "agent_floor",
+        "held": True,
+    }
+    assert VOICE_CLIENT_CONTROL_FRAME_ADAPTER.validate_python(body) == frame
+
+    for invalid in (
+        {**body, "held": "true"},
+        {**body, "held": 1},
+        {**body, "interrupted": True},
+        {**body, "transcript": "borrower speech must not cross this control"},
+        {**body, "api_version": "v1"},
+        {**body, "type": "mute"},
+    ):
+        with pytest.raises(ValidationError):
+            VOICE_CLIENT_CONTROL_FRAME_ADAPTER.validate_python(invalid)
 
 
 def test_live_audio_contract_rejects_legacy_and_impossible_frames() -> None:

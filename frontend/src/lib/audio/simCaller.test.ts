@@ -53,25 +53,27 @@ describe('agent clips are ineligible by construction', () => {
 	});
 
 	test('ships only caller-side fixtures, each tagged with its path kind', () => {
-		expect(CALLER_FIXTURES.length).toBe(7);
+		expect(CALLER_FIXTURES.length).toBe(8);
 		for (const fixture of CALLER_FIXTURES) {
 			expect(fixture.url.includes('_agent_')).toBe(false);
 			expect(['HAPPY', 'NON-HAPPY', 'BLOCKER'].includes(fixture.pathKind)).toBe(true);
 		}
 	});
 
-	test('happy caller is ordered as three separately flushed utterances', () => {
+	test('happy caller is ordered as four separately flushed utterances', () => {
 		const happy = CALLER_FIXTURES.filter((fixture) => fixture.pathKind === 'HAPPY');
 
 		expect(happy.map((fixture) => fixture.id)).toEqual([
-			'happy_1_borrower_claim',
-			'happy_2_verification_values',
-			'happy_3_promise_offer'
+			'happy_1_claim',
+			'happy_2_birthdate',
+			'happy_3_reference',
+			'happy_4_promise'
 		]);
 		expect(happy.map((fixture) => fixture.url)).toEqual([
-			'/fixtures/audio_e2e_happy_1_borrower_claim.wav',
-			'/fixtures/audio_e2e_happy_2_verification_values.wav',
-			'/fixtures/audio_e2e_happy_3_promise_offer.wav'
+			'/fixtures/audio_turn_happy_1_claim.wav',
+			'/fixtures/audio_turn_happy_2_birthdate.wav',
+			'/fixtures/audio_turn_happy_3_reference.wav',
+			'/fixtures/audio_turn_happy_4_promise.wav'
 		]);
 	});
 });

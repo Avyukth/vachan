@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
+REPO_ROOT = SCRIPT_DIR.parents[1]
 
 SAFE_TERMINAL_SEQUENCE = (
     "blind-greeting",
@@ -40,10 +41,10 @@ def _load_script(filename: str) -> list[tuple[Any, ...]]:
 
 def _load_fixture_scenarios() -> list[dict[str, Any]]:
     namespace = runpy.run_path(
-        str(SCRIPT_DIR / "make_audio_fixtures.py"),
+        str(REPO_ROOT / "tools" / "debug" / "make_happy_turns.py"),
         run_name="audio_fixture_contract",
     )
-    return namespace["SCENARIOS"]
+    return namespace["TURNS"]
 
 
 def _slug_sequence(script: list[tuple[Any, ...]]) -> tuple[str, ...]:
@@ -105,18 +106,20 @@ def test_verification_values_remain_borrower_spoken(filename: str) -> None:
         assert by_slug[slug][0] in {"rakesh", "borrower"}
 
 
-def test_happy_caller_fixture_is_three_conversational_utterances() -> None:
-    scenarios = _load_fixture_scenarios()
-    happy = [scenario for scenario in scenarios if scenario["path"].startswith("HAPPY")]
+def test_happy_caller_fixture_is_four_conversational_utterances() -> None:
+    turns = _load_fixture_scenarios()
 
-    assert [scenario["name"] for scenario in happy] == [
-        "happy_1_borrower_claim",
-        "happy_2_verification_values",
-        "happy_3_promise_offer",
+    assert [turn["name"] for turn in turns] == [
+        "claim",
+        "birthdate",
+        "reference",
+        "promise",
     ]
-    assert "मैं राकेश" in happy[0]["text"]
-    assert "जन्मतिथि" not in happy[0]["text"]
-    assert "जन्मतिथि" in happy[1]["text"]
-    assert "पंद्रह सौ" not in happy[1]["text"]
-    assert "पंद्रह सौ" in happy[2]["text"]
-    assert "जन्मतिथि" not in happy[2]["text"]
+    assert "मैं राकेश" in turns[0]["text"]
+    assert "जन्मतिथि" not in turns[0]["text"]
+    assert "जन्मतिथि" in turns[1]["text"]
+    assert "चार सात दो नौ" not in turns[1]["text"]
+    assert "चार सात दो नौ" in turns[2]["text"]
+    assert "जन्मतिथि" not in turns[2]["text"]
+    assert "पंद्रह सौ" in turns[3]["text"]
+    assert "जन्मतिथि" not in turns[3]["text"]

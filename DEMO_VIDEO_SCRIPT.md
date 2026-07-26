@@ -15,10 +15,10 @@ Every beat below was verified working on 26 Jul. Nothing here is aspirational.
   final commit.
 - If driving the caller from fixtures, arm simulated-caller mode **on camera** so the
   `SIMULATED CALLER — PRERECORDED AUDIO` banner is visible. Never hide it.
-- The happy caller is three conversational utterances, with one flush and one agent response
-  between each: **"मैं राकेश बोल रहा हूँ।" first**, then the two verification values, then the
-  promise. In simulated-caller mode, inject the ordered `1/3`, `2/3`, and `3/3` clips one at a
-  time after each response. Never lead with verification values or combine the lines.
+- The happy caller is four conversational utterances, with one flush and one agent response
+  between each: **"मैं राकेश बोल रहा हूँ।" first**, birth day/month, reference digits, then
+  the promise. In simulated-caller mode, inject the ordered `1/4` through `4/4` clips one at
+  a time after each response. Never lead with verification values or combine the lines.
 
 ---
 

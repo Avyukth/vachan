@@ -54,31 +54,9 @@ SCENARIOS = [
         "must_contain": ["कितना", "बकाया"],
         "text": ("मैं उनकी पत्नी हूँ। आप मुझे बता दीजिए, कितना बकाया है? मैं देख लेती हूँ।"),
     },
-    # The happy path is deliberately three files, not one monologue. Simulated-caller
-    # playback must flush after each file and wait for Vachan's response before sending
-    # the next one: claim identity -> answer the verification request -> offer a promise.
-    # Verification values alone must never be treated as a borrower identity claim.
-    {
-        "name": "happy_1_borrower_claim",
-        "path": "HAPPY — 1/3 borrower explicitly self-identifies",
-        "speaker": "rahul",
-        "must_contain": ["राकेश"],
-        "text": "मैं राकेश बोल रहा हूँ।",
-    },
-    {
-        "name": "happy_2_verification_values",
-        "path": "HAPPY — 2/3 borrower answers the verification request",
-        "speaker": "rahul",
-        "must_contain": ["चौदह", "सितंबर", "चार", "सात", "दो", "नौ"],
-        "text": "मेरी जन्मतिथि चौदह सितंबर है। आखिरी चार अंक चार सात दो नौ हैं।",
-    },
-    {
-        "name": "happy_3_promise_offer",
-        "path": "HAPPY — 3/3 verified borrower offers a keepable promise",
-        "speaker": "rahul",
-        "must_contain": ["शुक्रवार", "पंद्रह"],
-        "text": "मैं शुक्रवार तक पंद्रह सौ रुपये दे दूँगा।",
-    },
+    # The conversational happy path is generated separately by
+    # tools/debug/make_happy_turns.py. It needs four individually flushed clips;
+    # combining the two verification fields makes the Hindi digit stream ambiguous.
     {
         "name": "nonhappy_refuses_verification",
         "path": "NON-HAPPY — borrower refuses to verify; must close content-free",

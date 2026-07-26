@@ -72,22 +72,28 @@ export function decodeSimulatedCallerSocketMessage(data: string): SimulatedCalle
  */
 export const CALLER_FIXTURES: readonly SimulatedCallerFixture[] = [
 	{
-		id: 'happy_1_borrower_claim',
-		label: '1/3 · Borrower says “मैं राकेश बोल रहा हूँ”',
+		id: 'happy_1_claim',
+		label: '1/4 · Borrower says “मैं राकेश बोल रहा हूँ”',
 		pathKind: 'HAPPY',
-		url: '/fixtures/audio_e2e_happy_1_borrower_claim.wav'
+		url: '/fixtures/audio_turn_happy_1_claim.wav'
 	},
 	{
-		id: 'happy_2_verification_values',
-		label: '2/3 · Borrower gives the two verification values',
+		id: 'happy_2_birthdate',
+		label: '2/4 · Borrower gives birth day and month',
 		pathKind: 'HAPPY',
-		url: '/fixtures/audio_e2e_happy_2_verification_values.wav'
+		url: '/fixtures/audio_turn_happy_2_birthdate.wav'
 	},
 	{
-		id: 'happy_3_promise_offer',
-		label: '3/3 · Borrower promises ₹1,500 by Friday',
+		id: 'happy_3_reference',
+		label: '3/4 · Borrower gives the reference digits',
 		pathKind: 'HAPPY',
-		url: '/fixtures/audio_e2e_happy_3_promise_offer.wav'
+		url: '/fixtures/audio_turn_happy_3_reference.wav'
+	},
+	{
+		id: 'happy_4_promise',
+		label: '4/4 · Borrower promises ₹1,500 by Friday',
+		pathKind: 'HAPPY',
+		url: '/fixtures/audio_turn_happy_4_promise.wav'
 	},
 	{
 		id: 'nonhappy_refuses_verification',

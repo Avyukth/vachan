@@ -88,6 +88,10 @@ if (!('Bun' in globalThis)) {
 		await expect(page.getByRole('combobox', { name: 'Mock case' })).toHaveValue(
 			'case-rakesh-001'
 		);
+		const replayProbe = await page.request.post('/api/dev/replay', {
+			data: { api_version: 'v0', fixture: 'happy' }
+		});
+		expect(replayProbe.status()).toBe(404);
 
 		await page.getByRole('button', { name: 'Request mic' }).click();
 		await expect(

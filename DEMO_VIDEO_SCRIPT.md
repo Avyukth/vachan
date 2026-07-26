@@ -17,7 +17,8 @@ Every beat below was verified working on 26 Jul. Nothing here is aspirational.
   `SIMULATED CALLER — PRERECORDED AUDIO` banner is visible. Never hide it.
 - The happy caller is three conversational utterances, with one flush and one agent response
   between each: **"मैं राकेश बोल रहा हूँ।" first**, then the two verification values, then the
-  promise. Never lead with verification values or combine the three lines into one monologue.
+  promise. In simulated-caller mode, inject the ordered `1/3`, `2/3`, and `3/3` clips one at a
+  time after each response. Never lead with verification values or combine the lines.
 
 ---
 

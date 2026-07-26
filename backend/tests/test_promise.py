@@ -379,6 +379,73 @@ def test_atomic_evidence_failure_leaves_no_partial_promise_state(
     assert events == before_recorded
 
 
+@pytest.mark.parametrize("boundary", ["create", "correction", "commit"])
+def test_atomic_repository_failure_leaves_no_partial_promise_state(
+    db_connection: sqlite3.Connection,
+    boundary: str,
+) -> None:
+    _start_call(db_connection)
+    engine, events = _atomic_engine(db_connection)
+
+    async def prepare() -> None:
+        if boundary == "create":
+            return
+        await engine.create_candidate(
+            caller_phrase="pandrah sau, Friday",
+            amount="pandrah sau",
+            date_phrase="Friday",
+        )
+        await engine.read_back()
+        if boundary == "commit":
+            await engine.record_explicit_affirmative()
+
+    asyncio.run(prepare())
+    before_state = engine.state
+    before_candidate = engine.candidate
+    before_candidates = _table_rows(db_connection, "promise_candidates")
+    before_promises = _table_rows(db_connection, "promises")
+    before_events = _table_rows(db_connection, "events")
+    before_recorded = list(events)
+
+    table = "promises" if boundary == "commit" else "promise_candidates"
+    revision_filter = "WHEN NEW.revision = 2" if boundary == "correction" else ""
+    db_connection.execute(
+        f"""
+        CREATE TRIGGER reject_{boundary}_repository_write
+        BEFORE INSERT ON {table}
+        {revision_filter}
+        BEGIN
+            SELECT RAISE(ABORT, 'injected promise repository failure');
+        END
+        """
+    )
+
+    async def exercise() -> None:
+        if boundary == "create":
+            await engine.create_candidate(
+                caller_phrase="pandrah sau, Friday",
+                amount="pandrah sau",
+                date_phrase="Friday",
+            )
+        elif boundary == "correction":
+            await engine.correct_candidate(
+                caller_phrase="nahi, ek hazaar",
+                amount="ek hazaar",
+            )
+        else:
+            engine.apply_commit(engine.plan_commit())
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected promise repository failure"):
+        asyncio.run(exercise())
+
+    assert engine.state is before_state
+    assert engine.candidate == before_candidate
+    assert _table_rows(db_connection, "promise_candidates") == before_candidates
+    assert _table_rows(db_connection, "promises") == before_promises
+    assert _table_rows(db_connection, "events") == before_events
+    assert events == before_recorded
+
+
 def test_engine_restores_only_durable_state_and_keeps_commit_idempotent(
     db_connection: sqlite3.Connection,
 ) -> None:

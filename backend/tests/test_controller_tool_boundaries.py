@@ -117,6 +117,7 @@ def test_executor_that_skips_effect_cannot_mutate_promise_boundary(
                 )
             else:
                 await controller._confirm_promise()  # noqa: SLF001
+                await controller._commit_confirmed_promise()  # noqa: SLF001
 
     asyncio.run(exercise())
 
@@ -254,11 +255,8 @@ def test_affirmative_precedes_commit_decision_and_atomic_terminal_evidence(
             150_000,
             "Friday",
         )
-        _speech, disposition = await controller._confirm_promise()  # noqa: SLF001
-        await controller._set_disposition(  # noqa: SLF001
-            disposition,
-            reason_code="promise_confirmed",
-        )
+        _speech, _disposition = await controller._confirm_promise()  # noqa: SLF001
+        await controller._commit_confirmed_promise()  # noqa: SLF001
 
     asyncio.run(exercise())
 

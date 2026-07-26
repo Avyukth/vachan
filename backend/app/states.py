@@ -93,6 +93,7 @@ PROMISE_TRANSITIONS: frozenset[Transition] = frozenset(
         (PromiseState.CANDIDATE, PromiseState.READ_BACK),
         (PromiseState.READ_BACK, PromiseState.CONFIRMED),
         (PromiseState.CONFIRMED, PromiseState.COMMITTED),
+        (PromiseState.CONFIRMED, PromiseState.ABANDONED),
         (PromiseState.CANDIDATE, PromiseState.CORRECTED),
         (PromiseState.READ_BACK, PromiseState.CORRECTED),
         (PromiseState.CORRECTED, PromiseState.READ_BACK),

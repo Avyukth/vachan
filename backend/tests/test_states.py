@@ -23,7 +23,7 @@ from app.states import (
     [
         (CALL_TRANSITIONS, 13),
         (IDENTITY_TRANSITIONS, 7),
-        (PROMISE_TRANSITIONS, 10),
+        (PROMISE_TRANSITIONS, 11),
     ],
 )
 def test_every_declared_edge_is_accepted(

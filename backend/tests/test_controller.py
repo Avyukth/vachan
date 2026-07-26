@@ -15,6 +15,21 @@ from app.states import PromiseState
 from tests.fakes import FakeSarvamClient, SarvamScenario, ScriptedTurn
 
 
+class _BlockingConfirmationTtsClient(FakeSarvamClient):
+    """Pause the fourth TTS request after the promise mutation has run."""
+
+    def __init__(self, scenario: SarvamScenario) -> None:
+        super().__init__(scenario)
+        self.confirmation_tts_started = asyncio.Event()
+        self.release_confirmation_tts = asyncio.Event()
+
+    async def synthesize(self, text: str, **kwargs: object) -> dict[str, object]:
+        if self._tts_index == 3:  # noqa: SLF001 - deterministic network barrier
+            self.confirmation_tts_started.set()
+            await self.release_confirmation_tts.wait()
+        return await super().synthesize(text, **kwargs)
+
+
 def _controller(
     connection: sqlite3.Connection,
     frozen_demo_clock,
@@ -187,6 +202,72 @@ def test_technical_ending_at_read_back_rejects_stale_affirmative(
         ).fetchone()[0]
         == 0
     )
+
+
+def test_tts_failure_during_affirmative_leaves_no_business_promise(
+    db_connection: sqlite3.Connection,
+    frozen_demo_clock,
+) -> None:
+    call_id = "call-terminal-promise-tts-race"
+    sarvam = _BlockingConfirmationTtsClient(
+        SarvamScenario(
+            name=call_id,
+            turns=(
+                ScriptedTurn("Rakesh bol raha hoon", {"intent": "borrower_present"}),
+                ScriptedTurn(
+                    "चौदह सितंबर, reference 4729",
+                    {"intent": "verification_response"},
+                ),
+                ScriptedTurn(
+                    "pandrah sau Friday",
+                    {
+                        "intent": "offer_promise",
+                        "amount_minor": 150_000,
+                        "date_phrase": "Friday",
+                    },
+                ),
+                ScriptedTurn("haan", {"intent": "confirm"}),
+            ),
+        )
+    )
+    controller = DialogueController(
+        call_id=call_id,
+        case=RAKESH_CASE,
+        ledger=EvidenceLedger(db_connection),
+        sarvam=sarvam,
+        clock=frozen_demo_clock.now,
+    )
+
+    async def exercise() -> None:
+        await controller.start()
+        await controller.run_turn()
+        await controller.run_turn()
+        await controller.run_turn()
+        assert controller.snapshot.promise is PromiseState.READ_BACK
+
+        affirmative = asyncio.create_task(controller.run_turn())
+        await sarvam.confirmation_tts_started.wait()
+        await controller.technical_failure("tts")
+        sarvam.release_confirmation_tts.set()
+        with pytest.raises(ControllerClosedError):
+            await affirmative
+
+    asyncio.run(exercise())
+
+    assert controller.disposition is Disposition.ENDED_TECHNICAL
+    assert (
+        db_connection.execute(
+            "SELECT COUNT(*) FROM promises WHERE call_id = ?",
+            (call_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    committed = db_connection.execute(
+        "SELECT COUNT(*) FROM events WHERE call_id = ? AND type = ?",
+        (call_id, LedgerEventType.PROMISE_COMMITTED.value),
+    ).fetchone()[0]
+    assert committed == 0
+    assert len(_terminal_evidence(db_connection, call_id)) == 1
 
 
 @pytest.mark.parametrize(

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
+from app.states import CallState, IdentityState, PromiseState
 
 if TYPE_CHECKING:
     from app.seeds import MockCaseSeed
@@ -242,6 +243,14 @@ END;
 
 class ActiveCallExists(RuntimeError):
     """Demo reset was refused because at least one call is still active."""
+
+
+class TerminalDispositionConflict(RuntimeError):
+    """A terminal write lost to an already-persisted disposition."""
+
+    def __init__(self, disposition: Disposition) -> None:
+        self.disposition = disposition
+        super().__init__(f"call already ended as {disposition.value}")
 
 
 def connect_database(path: str | Path = "vachan.db") -> sqlite3.Connection:
@@ -620,6 +629,114 @@ class EvidenceLedger:
                 redacted_reason=redacted_reason,
             )
         return result, seq
+
+    def commit_promise_outcome(
+        self,
+        *,
+        call_id: str,
+        ts: datetime,
+        state_before: StateSnapshot,
+        state_committed: StateSnapshot,
+        state_completed: StateSnapshot,
+        mutation: Callable[[], MutationT],
+    ) -> tuple[MutationT, int]:
+        """Atomically commit a promise, its state edges, and its disposition.
+
+        Confirmation audio must complete before callers enter this boundary.
+        Once entered, a competing technical terminalization either wins before
+        the transaction (and no promise mutation runs) or loses after the
+        complete business outcome has committed.
+        """
+
+        if (
+            state_before.call is not CallState.ACTIVE
+            or state_before.identity is not IdentityState.CONFIRMED
+            or state_before.promise is not PromiseState.CONFIRMED
+            or state_committed
+            != StateSnapshot(
+                call=CallState.ACTIVE,
+                identity=IdentityState.CONFIRMED,
+                promise=PromiseState.COMMITTED,
+            )
+            or state_completed
+            != StateSnapshot(
+                call=CallState.COMPLETED,
+                identity=IdentityState.CONFIRMED,
+                promise=PromiseState.COMMITTED,
+            )
+        ):
+            raise ValueError("promise outcome requires the confirmed-to-committed terminal path")
+
+        with _immediate_transaction(self.connection):
+            call = self.connection.execute(
+                "SELECT disposition FROM calls WHERE id = ?",
+                (call_id,),
+            ).fetchone()
+            if call is None:
+                raise LookupError("call does not exist")
+            if call["disposition"] is not None:
+                raise TerminalDispositionConflict(Disposition(str(call["disposition"])))
+
+            result = mutation()
+            for event_type, before, after, reason in (
+                (
+                    LedgerEventType.PROMISE_COMMITTED,
+                    state_before,
+                    state_committed,
+                    "promise_committed",
+                ),
+                (
+                    LedgerEventType.STATE_TRANSITION,
+                    state_before,
+                    state_committed,
+                    "promise_committed",
+                ),
+                (
+                    LedgerEventType.STATE_TRANSITION,
+                    state_committed,
+                    state_completed,
+                    "terminal_promise_confirmed",
+                ),
+            ):
+                seq = _next_event_sequence(self.connection, call_id)
+                _insert_event_row(
+                    self.connection,
+                    call_id=call_id,
+                    seq=seq,
+                    ts=ts,
+                    event_type=event_type.value,
+                    state_before=before,
+                    state_after=after,
+                    redacted_reason=reason,
+                )
+
+            updated = self.connection.execute(
+                """
+                UPDATE calls
+                SET ended = ?, disposition = ?
+                WHERE id = ? AND disposition IS NULL
+                """,
+                (
+                    _iso_timestamp(ts),
+                    Disposition.PROMISE_CONFIRMED.value,
+                    call_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("promise outcome lost its active-call race")
+
+            terminal_seq = _next_event_sequence(self.connection, call_id)
+            _insert_event_row(
+                self.connection,
+                call_id=call_id,
+                seq=terminal_seq,
+                ts=ts,
+                event_type=LedgerEventType.DISPOSITION_SET.value,
+                state_before=state_completed,
+                state_after=state_completed,
+                redacted_reason="terminal_promise_confirmed",
+            )
+        return result, terminal_seq
 
     async def set_ended_operator(
         self,

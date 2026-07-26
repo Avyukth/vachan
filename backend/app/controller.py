@@ -25,12 +25,13 @@ from app.actions import (
 )
 from app.context_isolation import PromptMessage, PromptRole, build_llm_context
 from app.contracts import Disposition, LedgerEventType, StateSnapshot
-from app.db import EvidenceLedger
+from app.db import EvidenceLedger, TerminalDispositionConflict
 from app.gated_tools import GatedToolExecutor, ToolFacts
 from app.guard import OutputBlockedEvent, OutputGuardContext, classify_block, guard_for_tts
 from app.promise import (
     PromiseEngine,
     PromiseEvent,
+    PromiseEventType,
     SQLitePromiseRepository,
     normalize_promise_date,
 )
@@ -267,6 +268,27 @@ class DialogueController:
         """Persist one authorized promise effect and its evidence without yielding."""
 
         snapshot = self.snapshot
+        if event.event_type is PromiseEventType.COMMITTED:
+            state_committed = replace(snapshot, promise=event.state_after)
+            state_completed = replace(state_committed, call=CallState.COMPLETED)
+            try:
+                result, _seq = self.ledger.commit_promise_outcome(
+                    call_id=self.call_id,
+                    ts=self.clock(),
+                    state_before=replace(snapshot, promise=event.state_before),
+                    state_committed=state_committed,
+                    state_completed=state_completed,
+                    mutation=mutation,
+                )
+            except TerminalDispositionConflict as error:
+                self.disposition = error.disposition
+                raise ControllerClosedError(
+                    "call acquired a terminal disposition before promise commit"
+                ) from error
+            self._coordinator.adopt_persisted_snapshot(state_completed)
+            self.disposition = Disposition.PROMISE_CONFIRMED
+            return result
+
         result, _seq = self.ledger.mutate_with_event(
             call_id=self.call_id,
             ts=self.clock(),
@@ -638,6 +660,11 @@ class DialogueController:
             PromiseState.CONFIRMED,
             reason_code="promise_explicitly_confirmed",
         )
+        return "धन्यवाद। आपका वादा दर्ज हो गया है।", Disposition.PROMISE_CONFIRMED
+
+    async def _commit_confirmed_promise(self) -> None:
+        """Commit only after confirmation TTS completed successfully."""
+
         mutation = self._promise.plan_commit()
         result = await self._tools.execute(
             ToolName.COMMIT_PROMISE,
@@ -657,11 +684,6 @@ class DialogueController:
             raise ControllerToolEffectError("commit promise effect was not applied")
         _outcome, event = result
         await self._promise.record_applied_event(event)
-        await self._coordinator.transition(
-            PromiseState.COMMITTED,
-            reason_code="promise_committed",
-        )
-        return "धन्यवाद। आपका वादा दर्ज हो गया है।", Disposition.PROMISE_CONFIRMED
 
     async def _handle_confirmed(
         self,
@@ -763,7 +785,11 @@ class DialogueController:
         else:
             draft, disposition = await self._handle_preconfirmed(transcript, payload)
         speech, audio_response = await self._speak(draft)
-        if disposition is not None:
+        if disposition is Disposition.PROMISE_CONFIRMED:
+            if self.disposition is not None:
+                raise ControllerClosedError("call ended before confirmation audio completed")
+            await self._commit_confirmed_promise()
+        elif disposition is not None:
             await self._set_disposition(
                 disposition,
                 reason_code=f"terminal_{disposition.value.casefold()}",
@@ -845,6 +871,7 @@ class DialogueController:
             PromiseState.CANDIDATE,
             PromiseState.READ_BACK,
             PromiseState.CORRECTED,
+            PromiseState.CONFIRMED,
         }:
             await self._promise.abandon()
             await self._coordinator.transition(

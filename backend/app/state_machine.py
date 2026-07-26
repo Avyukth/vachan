@@ -168,6 +168,22 @@ class StateMachineCoordinator:
         """Return the current immutable authorization-relevant state."""
         return self._snapshot
 
+    def adopt_persisted_snapshot(self, target: StateSnapshot) -> None:
+        """Adopt state whose complete transition evidence is already atomic.
+
+        This synchronous hook is intentionally narrow: the promise outcome
+        boundary persists both legal state edges and the terminal disposition
+        in one SQLite transaction before publishing the resulting runtime
+        snapshot.
+        """
+
+        before = self._snapshot
+        if target.identity is not before.identity:
+            raise ValueError("atomic promise outcome cannot change identity")
+        validate_transition(before.promise, target.promise)
+        validate_transition(before.call, target.call)
+        self._snapshot = target
+
     async def transition(
         self,
         target: State,

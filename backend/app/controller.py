@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -69,6 +70,8 @@ from app.verification_evidence import VerificationEvidenceRepository
 
 JsonObject = dict[str, Any]
 Clock = Callable[[], datetime]
+
+_LOGGER = logging.getLogger(__name__)
 # Three user/assistant exchanges. Enough context for a classifier or a promise
 # correction, small enough that turn latency cannot grow without bound.
 MAX_PROMPT_HISTORY_MESSAGES = 6
@@ -736,6 +739,20 @@ class DialogueController:
         """Persist one redacted typed denial without exposing submitted facts."""
 
         snapshot = self.snapshot
+        # WARNING, not INFO: a refused write is the single most operator-relevant thing that
+        # can happen on a call, and events.redacted_reason only records
+        # "tool_denied:<tool>" - the cause lives in tool_decisions.reason, which nobody
+        # watching a live call is querying. A truncated caller utterance surfaces here as
+        # missing_amount/missing_date, and without this line that is invisible until someone
+        # opens the database. reason_code is an allowlisted code, never caller content.
+        _LOGGER.warning(
+            "invalid_action_facts call_id=%s tool=%s reason=%s identity=%s promise=%s",
+            self.call_id,
+            tool.value,
+            reason_code,
+            snapshot.identity.value,
+            snapshot.promise.value,
+        )
         decision = ToolDecision(
             tool=tool,
             allowed=False,
@@ -923,6 +940,23 @@ class DialogueController:
             call_state=self.snapshot.call,
         )
         action = validation.action
+        # Why this log exists: a live browser call reached CONFIRMED and then produced
+        # turns with NO promise tool decision at all, while the same utterance in an
+        # isolated probe classified cleanly as offer_promise. Without the decided intent
+        # there is no way to tell a model misclassification from a validator rejection.
+        #
+        # Deliberately content-free: intent and route are allowlisted enum values and the
+        # counts are integers. The transcript, the model's response_draft, and every
+        # borrower value stay out of the log, so this cannot leak account data.
+        _LOGGER.info(
+            "confirmed_action call_id=%s intent=%s accepted=%s handover=%s promise=%s history_msgs=%d",
+            self.call_id,
+            getattr(action.intent, "value", action.intent),
+            validation.accepted,
+            validation.handover_requested,
+            self.snapshot.promise.value,
+            len(self.history),
+        )
         if validation.handover_requested:
             await self._coordinator.transition(
                 IdentityState.UNVERIFIED,

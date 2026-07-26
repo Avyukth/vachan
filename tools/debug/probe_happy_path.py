@@ -112,6 +112,12 @@ async def main() -> int:
     )
     parser.add_argument("--settle", type=float, default=25.0, help="seconds to wait after flush")
     parser.add_argument(
+        "--quiet",
+        type=float,
+        default=5.0,
+        help="seconds of event silence taken to mean the agent has released the floor",
+    )
+    parser.add_argument(
         "--gap",
         type=float,
         default=6.0,
@@ -193,9 +199,7 @@ async def main() -> int:
             print(f"+{time.monotonic() - began:6.2f}s  sent -> flush")
             await socket.send(json.dumps({"type": "flush"}))
 
-            # Wait for the agent to actually answer before speaking again. Talking over the
-            # agent is what a real caller would not do, and it would also let one utterance
-            # be swallowed into the next STT segment.
+            # Wait for the agent to START answering...
             deadline = time.monotonic() + args.settle
             while time.monotonic() < deadline:
                 if sum(1 for event in events if event.get("type") == "agent_audio") > before:
@@ -205,6 +209,23 @@ async def main() -> int:
                 await asyncio.sleep(0.2)
             else:
                 print(f"+{time.monotonic() - began:6.2f}s  no agent reply within {args.settle:.0f}s")
+
+            # ...then wait for it to FINISH. This is not politeness, it is correctness: the
+            # backend now holds an agent floor and DISCARDS caller audio while the agent
+            # speaks (ledger AUDIO_SUPPRESSED:agent_floor). Sending the next utterance on
+            # the first agent_audio frame truncates its opening - which is how the promise
+            # clip lost "₹1500" and the model produced offer_promise with no amount, denied
+            # as invalid_action_facts=missing_amount. Wait for the event stream to go quiet.
+            last_seen = len(events)
+            quiet_since = time.monotonic()
+            while time.monotonic() - quiet_since < args.quiet:
+                if read_task.done():
+                    break
+                if len(events) != last_seen:
+                    last_seen = len(events)
+                    quiet_since = time.monotonic()
+                await asyncio.sleep(0.2)
+            print(f"+{time.monotonic() - began:6.2f}s  agent floor released ({args.quiet:.0f}s quiet)")
 
             if read_task.done():
                 print("socket closed early; stopping")

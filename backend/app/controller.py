@@ -1012,11 +1012,6 @@ class DialogueController:
             evidence_reason=f"operator_end:{normalized_reason}",
         )
 
-    async def duplicate_affirmative(self) -> None:
-        """Replay one duplicate affirmative against the idempotent engine."""
-
-        await self._promise.respond_to_read_back(explicit_affirmative=True)
-
     async def technical_failure(self, component: str = "stt") -> None:
         """Fail closed without allowing a business outcome."""
 

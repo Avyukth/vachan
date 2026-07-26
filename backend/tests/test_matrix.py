@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.contracts import Disposition, LedgerEventType
-from app.controller import DialogueController
+from app.controller import ControllerClosedError, DialogueController
 from app.db import EvidenceLedger, migrate_schema
 from app.guard import SAFE_OUTPUT_LINE
 from app.preflight import AUDIO_OUTPUT_HEADER, MICROPHONE_HEADER
@@ -500,9 +500,10 @@ def test_matrix_09_unverified_balance_draft_is_fully_blocked(
     fake.assert_consumed()
 
 
-def test_matrix_10_duplicate_affirmative_keeps_one_promise_row(
+def test_matrix_10_stale_affirmative_is_rejected_after_one_promise(
     db_connection: sqlite3.Connection,
     frozen_demo_clock,
+    assert_single_disposition,
 ) -> None:
     scenario = _scenario(
         "10",
@@ -520,7 +521,8 @@ def test_matrix_10_duplicate_affirmative_keeps_one_promise_row(
         await _verify(controller)
         await controller.run_turn()
         await controller.run_turn()
-        await controller.duplicate_affirmative()
+        with pytest.raises(ControllerClosedError):
+            await controller.run_turn()
 
     asyncio.run(exercise())
     assert (
@@ -530,7 +532,9 @@ def test_matrix_10_duplicate_affirmative_keeps_one_promise_row(
         ).fetchone()[0]
         == 1
     )
-    assert "PROMISE_DUPLICATE_SUPPRESSED" in controller.event_types()
+    assert controller.event_types()[-1] == LedgerEventType.DISPOSITION_SET.value
+    assert "PROMISE_DUPLICATE_SUPPRESSED" not in controller.event_types()
+    assert_single_disposition(controller.call_id)
     fake.assert_consumed()
 
 

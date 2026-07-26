@@ -167,20 +167,20 @@ under `/ws` are vite-proxied to :8000. The frozen schema is bead `sarvam-3s2`.
 | POST | `/api/takeover` | Break-glass: revoke tools → cancel work → stop TTS → log |
 | POST | `/api/reset` | Reseed demo data (403 during active calls) |
 | POST | `/api/audio/check` | Fixed reviewed Bulbul headphone/autoplay check |
+| GET | `/api/evidence/{call_id}` | Ordered redacted projection of persisted ledger events |
 | WS | `/ws/call/{call_id}` | PCM16 up (streaming transport) · JSON events down |
+| WS | `/ws/evidence/{call_id}` | Recover missed ledger rows, then tail the persisted call stream |
 | GET | `/healthz` | Liveness |
 <!-- mounted-api:end -->
 
-### Frozen contract, not currently mounted
+### Frozen contract
 
-The v0 protocol reserves the following route, but the current application does not implement or
-mount it. The operator console currently proves its view model with an explicitly labeled replay;
-the live SQLite-backed event journey remains part of `sarvam-ch1`.
+The v0 evidence route is now mounted above. This section remains as the marker-delimited list of
+reserved protocol routes that are not yet implemented.
 
 <!-- contract-api:start -->
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/evidence/{call_id}` | Contracted ordered event timeline; not mounted |
 <!-- contract-api:end -->
 
 ## The Demo (120 seconds, adversarial)

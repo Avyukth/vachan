@@ -77,14 +77,14 @@ def test_readme_mounted_api_table_matches_real_route_registry() -> None:
     )
 
 
-def test_unmounted_evidence_endpoint_is_labeled_contract_only() -> None:
+def test_evidence_endpoint_is_mounted_not_contract_only() -> None:
     markdown = ROOT_README.read_text(encoding="utf-8")
     mounted = _documented_routes(_marked_section(markdown, MOUNTED_START, MOUNTED_END))
     contracted = _documented_routes(_marked_section(markdown, CONTRACT_START, CONTRACT_END))
 
     evidence_route = ("GET", "/api/evidence/{call_id}")
-    assert evidence_route not in mounted
-    assert evidence_route in contracted
+    assert evidence_route in mounted
+    assert evidence_route not in contracted
 
 
 def test_frontend_readme_is_bun_only() -> None:

@@ -8,6 +8,10 @@
 		type PcmCaptureSession
 	} from '$lib/audio/pcm16';
 	import OperatorConsole from '$lib/components/OperatorConsole.svelte';
+	import {
+		connectLiveEvidence,
+		type EvidenceConnectionState
+	} from '$lib/evidence';
 	import type { OperatorConnectionState } from '$lib/operator';
 	import { connectReplay, type ReplayFixture } from '$lib/replay';
 	import {
@@ -31,6 +35,7 @@
 	type ResetState = 'idle' | 'confirming' | 'running' | 'success' | 'error';
 
 	const RESET_CONFIRMATION = 'RESET DEMO / MOCK DATA';
+	const ACTIVE_CALL_STORAGE_KEY = 'vachan.activeCallId';
 
 	let microphoneState = $state<MicrophoneState>('idle');
 	let microphoneDetail = $state('Permission has not been requested on this browser.');
@@ -43,6 +48,8 @@
 	let preflightDetail = $state('Choose a mock case after completing both browser audio checks.');
 	let preflightBusy = $state(false);
 	let activeCallId = $state('');
+	let liveEvents = $state<ServerEvent[]>([]);
+	let liveConnectionState = $state<OperatorConnectionState>('idle');
 	let takeoverActive = $state(false);
 	let operatorEndReason = $state('');
 	let replayFixture = $state<ReplayFixture>('happy');
@@ -55,6 +62,8 @@
 		'Reset is available only outside an active call and affects governed demo rows only.'
 	);
 	let stopReplay: (() => void) | undefined;
+	let stopLiveEvidence: (() => void) | undefined;
+	let evidenceSubscriptionGeneration = 0;
 	let audioCheckAbort: AbortController | undefined;
 	let liveCapture: PcmCaptureSession | undefined;
 	const agentAudio = new AgentAudioPlayback();
@@ -84,12 +93,12 @@
 		blocked: 'BLOCKED'
 	};
 
-	let operatorConnectionState = $derived.by<OperatorConnectionState>(() => {
+	let replayConnectionState = $derived.by<OperatorConnectionState>(() => {
 		if (replayState === 'connecting') return 'connecting';
 		if (replayState === 'playing') return 'live';
 		if (replayState === 'complete') return 'complete';
 		if (replayState === 'error') return 'degraded';
-		return activeCallId ? 'live' : 'idle';
+		return 'idle';
 	});
 	let canRunPreflight = $derived(
 		microphoneState === 'ready' &&
@@ -217,6 +226,47 @@
 		if (capture) await capture.close();
 	}
 
+	function clearLiveSubscription(): void {
+		evidenceSubscriptionGeneration += 1;
+		stopLiveEvidence?.();
+		stopLiveEvidence = undefined;
+	}
+
+	function subscribeToLiveEvidence(callId: string): void {
+		clearLiveSubscription();
+		const generation = evidenceSubscriptionGeneration;
+		liveConnectionState = 'connecting';
+		void connectLiveEvidence(callId, {
+			onSnapshot: (events) => {
+				if (generation !== evidenceSubscriptionGeneration) return;
+				liveEvents = [...events];
+				if (events.at(-1)?.type === 'disposition') {
+					sessionStorage.removeItem(ACTIVE_CALL_STORAGE_KEY);
+					activeCallId = '';
+					takeoverActive = false;
+					operatorEndReason = '';
+					void stopLiveCapture();
+					stopAgentAudio();
+					resetPreflight(
+						'Call ended with persisted evidence. Run policy preflight before starting another call.'
+					);
+					resetDetail =
+						'The terminal disposition is durable. Demo reset is available after explicit confirmation.';
+				}
+			},
+			onState: (state: EvidenceConnectionState) => {
+				if (generation !== evidenceSubscriptionGeneration) return;
+				liveConnectionState = state;
+			}
+		}).then((stop) => {
+			if (generation !== evidenceSubscriptionGeneration) {
+				stop();
+				return;
+			}
+			stopLiveEvidence = stop;
+		});
+	}
+
 	async function handleLiveVoiceMessage(message: unknown): Promise<void> {
 		const frame = parseLiveVoiceFrame(message);
 		if (frame === null) {
@@ -317,6 +367,9 @@
 			if (!response.ok) throw new Error(`Start was refused with HTTP ${response.status}.`);
 			const body = (await response.json()) as { call_id: string };
 			activeCallId = body.call_id;
+			sessionStorage.setItem(ACTIVE_CALL_STORAGE_KEY, body.call_id);
+			liveEvents = [];
+			subscribeToLiveEvidence(body.call_id);
 			takeoverActive = false;
 			operatorEndReason = '';
 			liveCapture = await startCallPcm16Capture(body.call_id, (message) => {
@@ -356,15 +409,12 @@
 				})
 			});
 			if (!response.ok) throw new Error(`End call failed with HTTP ${response.status}.`);
-			const event = (await response.json()) as ServerEvent;
-			replayEvents = [...replayEvents, event];
+			await response.json();
 
-			activeCallId = '';
-			takeoverActive = false;
-			operatorEndReason = '';
-			resetPreflight('Call ended safely. Run policy preflight before starting another call.');
+			preflightDetail =
+				'End accepted. Waiting for the persisted terminal disposition before unlocking reset.';
 			resetDetail =
-				'The active call ended successfully. Demo reset is available after explicit confirmation.';
+				'Reset remains locked until the terminal disposition reaches the persisted ledger stream.';
 		} catch (error: unknown) {
 			preflightDetail =
 				error instanceof Error
@@ -389,8 +439,7 @@
 				})
 			});
 			if (!response.ok) throw new Error(`Takeover failed with HTTP ${response.status}.`);
-			const event = (await response.json()) as ServerEvent;
-			replayEvents = [...replayEvents, event];
+			await response.json();
 			takeoverActive = true;
 			operatorEndReason = '';
 			preflightDetail =
@@ -446,6 +495,10 @@
 
 			stopReplay?.();
 			stopReplay = undefined;
+			clearLiveSubscription();
+			sessionStorage.removeItem(ACTIVE_CALL_STORAGE_KEY);
+			liveEvents = [];
+			liveConnectionState = 'idle';
 			replayEvents = [];
 			replayState = 'idle';
 			replayLabel = '';
@@ -494,6 +547,7 @@
 
 	onDestroy(() => {
 		stopReplay?.();
+		clearLiveSubscription();
 		audioCheckAbort?.abort();
 		void stopLiveCapture();
 		void agentAudio.close();
@@ -501,6 +555,12 @@
 
 	onMount(() => {
 		void loadCases();
+		const restoredCallId = sessionStorage.getItem(ACTIVE_CALL_STORAGE_KEY);
+		if (restoredCallId) {
+			activeCallId = restoredCallId;
+			preflightDetail = `Recovering persisted evidence for ${restoredCallId}.`;
+			subscribeToLiveEvidence(restoredCallId);
+		}
 	});
 </script>
 
@@ -668,6 +728,16 @@
 		</aside>
 	</section>
 
+	<OperatorConsole
+		events={liveEvents}
+		connectionState={liveConnectionState}
+		streamLabel="LIVE · PERSISTED LEDGER"
+		onEnd={activeCallId ? endOperatorCall : undefined}
+		onTakeover={activeCallId ? takeoverOperatorCall : undefined}
+		{takeoverActive}
+		bind:endReason={operatorEndReason}
+	/>
+
 	{#if import.meta.env.DEV}
 		<section class="replay-harness" aria-labelledby="replay-heading">
 			<div class="replay-toolbar">
@@ -701,18 +771,13 @@
 				<span>{replayStateLabels[replayState]}</span>
 			</div>
 
+			<OperatorConsole
+				events={replayEvents}
+				connectionState={replayConnectionState}
+				streamLabel={replayLabel || 'REPLAY — recorded sequence'}
+			/>
 		</section>
 	{/if}
-
-	<OperatorConsole
-		events={replayEvents}
-		connectionState={operatorConnectionState}
-		streamLabel={replayLabel || 'LEDGER EVENT STREAM'}
-		onEnd={activeCallId ? endOperatorCall : undefined}
-		onTakeover={activeCallId ? takeoverOperatorCall : undefined}
-		{takeoverActive}
-		bind:endReason={operatorEndReason}
-	/>
 
 	<footer>
 		<p>LOCAL STAGE ORIGIN</p>

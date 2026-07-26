@@ -65,6 +65,9 @@ function authoritativeEvents(events: readonly ServerEvent[]): readonly ServerEve
 	let lastSequence = 0;
 
 	for (const event of events) {
+		if (event.payload.source !== 'persisted_ledger' && event.payload.source !== 'recorded_replay') {
+			continue;
+		}
 		if (event.seq <= lastSequence) continue;
 		accepted.push(event);
 		lastSequence = event.seq;

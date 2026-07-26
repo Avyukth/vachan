@@ -17,6 +17,8 @@ export const API_ROUTES = {
 	reset: '/api/reset',
 	utterance: '/api/utterance',
 	evidence: (callId: string) => `/api/evidence/${encodeURIComponent(callId)}`,
+	evidenceWebSocket: (callId: string, afterSeq: number) =>
+		`/ws/evidence/${encodeURIComponent(callId)}?after_seq=${afterSeq}`,
 	callWebSocket: (callId: string) => `/ws/call/${encodeURIComponent(callId)}`
 } as const;
 

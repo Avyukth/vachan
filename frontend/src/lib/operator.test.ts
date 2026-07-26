@@ -14,7 +14,7 @@ function event(
 		call_id: 'call-demo',
 		seq,
 		ts: `2026-07-26T12:00:${String(seq).padStart(2, '0')}+05:30`,
-		payload
+		payload: { source: 'persisted_ledger', ...payload }
 	};
 }
 
@@ -101,5 +101,24 @@ describe('ledger-derived operator view', () => {
 
 		expect(view.alert).toBeNull();
 		expect(view.dialogueStep).toBe('OUTCOME RECORDED');
+	});
+
+	test('ignores optimistic UI events without a persisted or replay source marker', () => {
+		const optimistic = {
+			...event(1, 'state_change', {
+				machine: 'identity',
+				before: 'UNVERIFIED',
+				after: 'CONFIRMED'
+			}),
+			payload: {
+				machine: 'identity',
+				before: 'UNVERIFIED',
+				after: 'CONFIRMED'
+			}
+		};
+		const view = buildOperatorView([optimistic], 'live');
+
+		expect(view.events).toEqual([]);
+		expect(view.identityState).toBe('—');
 	});
 });

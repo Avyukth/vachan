@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.audio_spike import router as audio_spike_router
 from app.db import EvidenceLedger
+from app.evidence import router as evidence_router
 from app.preflight import router as preflight_router
 from app.recovery import (
     OrphanRecovery,
@@ -174,6 +175,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(audio_spike_router)
+app.include_router(evidence_router)
 app.include_router(preflight_router)
 app.include_router(replay_router)
 app.include_router(reset_router)
